@@ -11,6 +11,10 @@
 
 <br/>
 
+<a href="https://zly060115.github.io/stardust-hand/"><img src="https://img.shields.io/badge/%E2%96%B6%20%E5%9C%A8%E7%BA%BF%E4%BD%93%E9%AA%8C-Live%20Demo-c9a227?style=for-the-badge" alt="Live Demo" /></a>
+
+<br/><br/>
+
 ![MediaPipe](https://img.shields.io/badge/MediaPipe-HandLandmarker-c9a227?style=flat-square)
 ![Canvas2D](https://img.shields.io/badge/Rendering-Canvas%202D-c9a227?style=flat-square)
 ![No Build](https://img.shields.io/badge/Build-none-c9a227?style=flat-square)
