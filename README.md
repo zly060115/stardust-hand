@@ -27,10 +27,11 @@
 
 ## 这是什么
 
-一个**单文件**的实时交互作品：摄像头 → 手部骨架 → 粒子力场。
+一个**零依赖、零构建**的实时交互作品：摄像头 → 手部骨架 → 粒子力场。
 
-没有 Three.js，没有构建步骤，没有 `npm install`。
-`index.html` 打开就是全部，所有物理、渲染、音效都是手写的。
+没有 Three.js，没有打包器，没有 `npm install`。
+代码按职责拆成 11 个 ES Module（识别、力场、粒子、音效各自独立），
+浏览器原生加载，改完刷新就生效，所有物理、渲染、音效都是手写的。
 
 <div align="center">
 <table>
@@ -149,13 +150,31 @@ Canvas 2D，加法混合（`lighter`）+ 半透明覆盖做拖尾。
 
 ```
 .
-├── index.html              # 全部代码：HTML + CSS + JS（约 1200 行）
+├── index.html              # 页面骨架（58 行）
+├── css/
+│   └── style.css           # 全部界面样式
+├── js/
+│   ├── config.js           # 主题配色 + 所有可调参数（改效果只动这个）
+│   ├── state.js            # 运行时共享状态（live binding，避免循环依赖）
+│   ├── render.js           # 光斑贴图缓存（52 档色相预渲染）
+│   ├── viewport.js         # 画布尺寸
+│   ├── particles.js        # 星云粒子：生成、力场物理、绘制
+│   ├── hands.js            # 手势解析、骨架绘制、演示假手
+│   ├── effects.js          # 爆发 / 响指冲击 / 指尖火星
+│   ├── audio.js            # Web Audio 合成音效 + 麦克风瞬态检测
+│   ├── engine.js           # MediaPipe 引擎加载 + 坐标映射
+│   ├── ui.js               # DOM 引用与界面反馈
+│   └── main.js             # 装配：主循环、启动流程、事件绑定
 ├── hand_landmarker.task    # MediaPipe 手部模型（7.5MB，Apache-2.0）
 ├── screenshots/            # 演示图
-├── docs/tuning.md          # 代码地图 + 所有可调参数
+├── docs/tuning.md          # 模块地图 + 所有可调参数
 ├── LICENSE
 └── README.md
 ```
+
+模块依赖是无环的：`config → state → render/ui → particles/hands → effects → main`。
+手势层只产生事件标志（`evPinch` / `evSnap`…），由 `effects.consumeHandEvents()` 统一消费，
+所以识别、音效、特效可以独立修改而互不影响。
 
 ---
 
@@ -164,15 +183,15 @@ Canvas 2D，加法混合（`lighter`）+ 半透明覆盖做拖尾。
 想知道「粒子密度改哪行」「怎么加新手势」「怎么换配色」——
 看 **[docs/tuning.md](docs/tuning.md)**，里面有完整的代码地图和参数表。
 
-最常动的三个地方：
+最常动的三个地方（都在 `js/config.js`）：
 
 | 想要的效果 | 改哪里 |
 |---|---|
-| 粒子更密 | `initParticles()` 里的 `NEBULA` 上限 |
-| 抓得更狠 | `h.strength = 2.05 - ...` 的 2.05 |
-| 转得更疯 | `h.swirl = 0.05 + 1.05 * ...` 的 1.05 |
+| 粒子更密 | `SCALE.nebula.max`（现在 2600） |
+| 抓得更狠 | `FIELD.pull`（现在 2.05） |
+| 转得更疯 | `FIELD.swirlRange`（现在 1.05） |
 
-配色集中在文件顶部的 `THEME` 常量，换一套数值就是一个新星系。
+配色集中在 `config.js` 顶部的 `THEME` 常量，换一套数值就是一个新星系。
 
 ---
 
@@ -183,7 +202,7 @@ Canvas 2D，加法混合（`lighter`）+ 半透明覆盖做拖尾。
   模型文件已随仓库提供，不走网络
 - 响指的音量阈值是经验值，安静环境下最准；环境嘈杂时可能漏检，
   但有视觉兜底
-- 集显笔记本 + 2K 屏可能掉到 40fps 左右，可下调 `NEBULA`
+- 集显笔记本 + 2K 屏可能掉到 40fps 左右，可下调 `config.js` 里的 `SCALE.nebula.max`
 - 只在 Chrome / Edge 上充分测试过；Safari 对 `getUserMedia` 和 AudioContext
   的时序更严格，可能需要点一下页面才有声音
 
