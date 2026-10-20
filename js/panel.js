@@ -7,7 +7,7 @@
 
 import { THEMES, settings, setTheme, randomTheme, resetAll, applySettings, save, palette } from './settings.js';
 import { P } from './particles.js';
-import { clearShapes } from './draw.js';
+import { clearShapes, undoStroke } from './draw.js';
 import { tuneBtn, muteBtn, setMuteIcon, setTuneActive, toast } from './ui.js';
 import { isMuted } from './audio.js';
 
@@ -201,11 +201,17 @@ export function buildPanel() {
   const foot = el('div', 'panel-foot');
   const rand = el('button', 'mini', '随机配色');
   rand.addEventListener('click', () => { randomTheme(); sync(); toast('随机配色'); });
+  const undo = el('button', 'mini', '撤回一笔');
+  undo.addEventListener('click', () => {
+    const r = undoStroke();
+    toast(r === 'live' || r === 'stroke' ? '已撤回一笔' : r === 'sheet' ? '已撤回上一张' : '没有可撤回的笔画');
+  });
   const clear = el('button', 'mini ghost', '清空涂鸦');
   clear.addEventListener('click', () => { clearShapes(); toast('已擦掉'); });
   const reset = el('button', 'mini ghost', '恢复默认');
   reset.addEventListener('click', resetAll);
   foot.appendChild(rand);
+  foot.appendChild(undo);
   foot.appendChild(clear);
   foot.appendChild(reset);
   body.appendChild(foot);

@@ -363,9 +363,9 @@ button.ghost:hover { color: var(--text); background: none; transform: none; box-
 }
 
 /* 底部按钮 */
-.panel-foot { display: flex; gap: 8px; margin-top: 14px; }
+.panel-foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .mini {
-  flex: 1; padding: 8px 0;
+  flex: 1 1 calc(50% - 4px); padding: 8px 0;
   font-size: 10.5px; font-weight: 500; letter-spacing: .14em;
   border-radius: 9px; box-shadow: none;
   background: rgba(var(--accent-rgb),.12);

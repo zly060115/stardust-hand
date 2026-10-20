@@ -3,12 +3,12 @@
  *
  * 思路分三段：
  *   1. 记录：食指单指伸出时，把指尖轨迹抽稀成一串点（live）
- *   2. 识别：抬手后用一串点做闭合判断 + 形状匹配，命中就把笔迹换成标准形状曲线
+ *   2. 识别：抬手后判断这一笔是不是闭合图形，命中就把笔迹换成标准形状曲线
+ *            （判定逻辑在 shape.js：首尾靠近 + 围出面积 + 包围盒不扁平）
  *   3. 成形：沿目标曲线撒一圈粒子，让它们从原来笔画的位置飞过去聚拢
  *
- * 形状匹配用的是最朴素的办法：把两条曲线都归一化到单位框，算平均最近距离。
- * 没有神经网络、没有第三方库，5 个模板比较 64 个点，一次不到 0.1ms。
- * 认不出来也没关系——手绘的轨迹本身就会被粒子保留下来，只是不规整而已。
+ * 认不出来也没关系——手绘的轨迹本身就会被粒子保留下来，写字就是写字，
+ * 不会被硬套成一个图形。
  */
 
 import { THEME, FX, DRAW } from './config.js';
@@ -16,157 +16,9 @@ import { clock } from './state.js';
 import { sprites, hueIndex } from './render.js';
 import { ctx } from './ui.js';
 import { sfx } from './audio.js';
+import { analyzeStroke, pathLength, resample, placeTemplate } from './shape.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
-const len2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-
-/* ---------------------- 几何工具 ---------------------- */
-
-function pathLength(pts) {
-  let L = 0;
-  for (let i = 1; i < pts.length; i++) L += len2(pts[i - 1], pts[i]);
-  return L;
-}
-
-/** 按弧长等距重采样：把任意密度的笔画变成固定点数，方便比较与撒粒子 */
-function resample(pts, n) {
-  if (pts.length < 2) return Array.from({ length: n }, () => ({ ...pts[0] }));
-  const total = pathLength(pts);
-  if (total <= 0) return Array.from({ length: n }, () => ({ ...pts[0] }));
-
-  const step = total / (n - 1);
-  const out = [{ ...pts[0] }];
-  let prev = pts[0];
-  let i = 1;
-  let acc = 0;                       // 从 prev 出发已走过的长度
-
-  while (i < pts.length && out.length < n) {
-    const cur = pts[i];
-    const seg = len2(prev, cur);
-    if (acc + seg >= step) {
-      const t = (step - acc) / seg;
-      const p = { x: prev.x + (cur.x - prev.x) * t, y: prev.y + (cur.y - prev.y) * t };
-      out.push(p);
-      prev = p;
-      acc = 0;
-    } else {
-      acc += seg;
-      prev = cur;
-      i++;
-    }
-  }
-  while (out.length < n) out.push({ ...pts[pts.length - 1] });
-  return out;
-}
-
-function bounds(pts) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of pts) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  }
-  const w = maxX - minX;
-  const h = maxY - minY;
-  return { x: minX, y: minY, w, h, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
-}
-
-/** 平移到原点、按最长边缩放到单位长度、中心放到 (0.5,0.5) */
-function normalize(pts) {
-  const b = bounds(pts);
-  const m = Math.max(b.w, b.h) || 1;
-  return pts.map(p => ({
-    x: (p.x - b.cx) / m + 0.5,
-    y: (p.y - b.cy) / m + 0.5,
-  }));
-}
-
-/** A 上每个点到 B 的最近距离的平均值 */
-function meanDist(A, B) {
-  let sum = 0;
-  for (const a of A) {
-    let best = Infinity;
-    for (const b of B) {
-      const dx = a.x - b.x;
-      const dy = a.y - b.y;
-      const d = dx * dx + dy * dy;
-      if (d < best) best = d;
-    }
-    sum += Math.sqrt(best);
-  }
-  return sum / A.length;
-}
-
-/* ---------------------- 形状模板 ---------------------- */
-
-function buildTemplates() {
-  const raw = {};
-
-  // 心形：经典参数曲线，y 轴翻成屏幕坐标（向下为正）
-  const heart = [];
-  for (let i = 0; i < 180; i++) {
-    const t = (i / 180) * Math.PI * 2;
-    const x = 16 * Math.pow(Math.sin(t), 3);
-    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
-    heart.push({ x, y: -y });
-  }
-  raw.heart = heart;
-
-  const circle = [];
-  for (let i = 0; i < 90; i++) {
-    const t = (i / 90) * Math.PI * 2;
-    circle.push({ x: Math.cos(t), y: Math.sin(t) });
-  }
-  raw.circle = circle;
-
-  const star = [];
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 ? 0.42 : 1;
-    const a = -Math.PI / 2 + (i / 10) * Math.PI * 2;
-    star.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
-  }
-  raw.star = star;
-
-  raw.triangle = [{ x: 0, y: -1 }, { x: 0.95, y: 0.85 }, { x: -0.95, y: 0.85 }];
-  raw.square = [{ x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 }];
-
-  const out = {};
-  for (const k in raw) out[k] = normalize(resample(raw[k], 64));
-  return out;
-}
-
-const TEMPLATES = buildTemplates();
-
-/** 把模板按用户笔迹的包围盒放回屏幕坐标（保持比例，不拉伸） */
-function placeTemplate(name, userPts) {
-  const b = bounds(userPts);
-  const m = Math.max(b.w, b.h) || 1;
-  return TEMPLATES[name].map(p => ({
-    x: b.cx + (p.x - 0.5) * m,
-    y: b.cy + (p.y - 0.5) * m,
-  }));
-}
-
-/** 认形状：返回 { name, pts } 或 null */
-export function matchShape(pts) {
-  const A = normalize(resample(pts, 64));
-  let best = null;
-  let bestScore = Infinity;
-
-  for (const name in TEMPLATES) {
-    const err = (meanDist(A, TEMPLATES[name]) + meanDist(TEMPLATES[name], A)) * 0.5;
-    // 心形给一点点偏好：它是这个作品的主角，平手时选它
-    const score = err * (name === 'heart' ? 0.93 : 1);
-    if (score < bestScore) {
-      bestScore = score;
-      best = name;
-    }
-  }
-
-  if (bestScore > DRAW.matchError) return null;
-  return { name: best, pts: placeTemplate(best, pts) };
-}
 
 /* ---------------------- 状态 ---------------------- */
 
@@ -184,6 +36,23 @@ let lostTime = 0;
 export const SHAPE_NAMES = { heart: '心形', circle: '圆形', star: '星形', triangle: '三角', square: '方形' };
 export const shapeCount = () => sheets.length;
 export const isDrawing = () => !!live;
+
+/** 撤回刚刚写下的一笔（正在画的那一笔优先丢掉） */
+export function undoStroke() {
+  if (live) { live = null; return 'live'; }
+
+  const sh = sheets[sheets.length - 1];
+  if (!sh || !sh.marks || sh.marks.length < 2) {
+    sheets.pop();
+    return sheets.length ? 'sheet' : null;
+  }
+
+  sh.marks.pop();
+  sh.parts.length = sh.marks[sh.marks.length - 1];
+  sh.strokes = Math.max(0, sh.strokes - 1);
+  sh.touched = clock;                   // 撤回也算一次操作，别让剩下的内容提前淡出
+  return 'stroke';
+}
 
 /* ---------------------- 笔迹 ---------------------- */
 
@@ -219,15 +88,14 @@ function commitStroke() {
   const total = pathLength(pts);
   if (total < DRAW.minLength) return;
 
-  const closed = len2(pts[0], pts[pts.length - 1]) / total < DRAW.closeRatio;
-
+  // 闭合 + 绕行方向 + 扁平度 三重判断都过了才会套模板，写字不会被强行规整
   let target = pts;
   let name = null;
-  if (FX.autoShape && closed) {
-    const hit = matchShape(pts);
-    if (hit) {
-      target = hit.pts;
-      name = hit.name;
+  if (FX.autoShape) {
+    const verdict = analyzeStroke(pts);
+    if (verdict.hit) {
+      target = verdict.hit.pts;
+      name = verdict.hit.name;
     }
   }
 
@@ -266,12 +134,13 @@ function spawnShape(from, target, name) {
   const full = sheet && sheet.parts.length + parts.length > DRAW.sheetParts;
 
   if (stale || full) {
-    sheet = { parts: [], born: now, touched: now, strokes: 0 };
+    sheet = { parts: [], born: now, touched: now, strokes: 0, marks: [0] };
     sheets.push(sheet);
     while (sheets.length > DRAW.maxSheets) sheets.shift();
   }
 
   sheet.parts.push(...parts);
+  sheet.marks.push(sheet.parts.length);  // 记下每一笔的结束位置，撤销时按笔回退
   sheet.strokes++;
   sheet.touched = now;                  // 每落一笔就续命，写字时不会写到一半就淡掉
   return name;
