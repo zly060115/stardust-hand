@@ -6,6 +6,7 @@
  */
 
 import { MIC } from './config.js';
+import { drawingNow, strokeEndClock } from './state.js';
 import { setStatus } from './ui.js';
 
 const AC_CLASS = window.AudioContext || window.webkitAudioContext;
@@ -20,6 +21,8 @@ let micAnalyser = null;
 let micData = null;
 let micBase = 0.0008;
 let micCool = 0;
+let micPeakV = 0;      // 正在观察的峰值
+let micPeakT = 0;
 
 export const isMuted = () => muted;
 export const hasAudio = () => !!ac;
@@ -225,6 +228,13 @@ export function setupMic(stream) {
 
 /**
  * 每帧检查一次麦克风能量。
+ *
+ * 只判"能量超阈值"是不够的——说话、敲键盘、放音乐都能过。响指的特征是
+ * **极陡的上升 + 立即回落**，所以这里分两步：先记住峰值，等它明显衰减下来
+ * 才确认是一次瞬态；一直不衰减的直接当噪声丢掉（延迟约 2 帧，肉眼无感）。
+ *
+ * 另外还要求：手在画面里、而且不在写字（写字时手上的动静多半是笔尖摩擦声）。
+ *
  * @param {number} now 当前时间（秒）
  * @param {Array} hands 手部状态，用来决定爆发中心
  * @param {Function} onSnap 命中时回调 (x, y)
@@ -248,9 +258,34 @@ export function pollMic(now, hands, onSnap) {
   if (e < micBase) micBase = micBase * 0.88 + e * 0.12;
   else micBase = micBase * 0.995 + e * 0.005;
 
-  if (e > micBase * MIC.thresh && e > MIC.floor && now - micCool > MIC.cooldown) {
+  // --- 第一步：记峰值 ---
+  if (e > micBase * MIC.thresh && e > MIC.floor) {
+    if (micPeakV === 0) {
+      micPeakT = now;
+      micPeakV = e;
+    } else if (e > micPeakV) {
+      micPeakV = e;
+    }
+  }
+
+  // --- 第二步：等它掉下来，掉得快才算响指 ---
+  if (micPeakV === 0) return;
+  const age = now - micPeakT;
+
+  if (age > 0.02 && e < micPeakV * MIC.decay) {
+    micPeakV = 0;
+    micPeakT = 0;
+    if (now - micCool < MIC.cooldown) return;
+
+    const h = hands.find(x => x.visible > 0.4);
+    if (!h) return;                                        // 没有手就不是手势，别炸
+    if (drawingNow || now - strokeEndClock < 0.3) return;   // 写字时不认，避免把笔迹打散
+    if (now - h.snapAt < MIC.handLock) return;              // 视觉线刚报过，别重复
+
     micCool = now;
-    const h = hands.find(x => x.visible > 0.25);
-    onSnap(h ? h.x : null, h ? h.y : null);
+    onSnap(h.x, h.y);
+  } else if (age > MIC.tailMax) {
+    micPeakV = 0;       // 一直没衰减：持续噪声，丢掉
+    micPeakT = 0;
   }
 }

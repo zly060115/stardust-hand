@@ -19,6 +19,15 @@ export let clock = 0;
 /** 运行模式：idle 未启动 / live 摄像头 / demo 演示 */
 export let mode = 'idle';
 
+/**
+ * 是否有一笔正在记录（由 draw.js 维护）。
+ * hands.js 用它做手势互斥：落笔期间不认响指，避免写到一半被"啪"一下打散。
+ */
+export let drawingNow = false;
+
+/** 上一次收笔的时刻（秒），用来给响指加一段静默期 */
+export let strokeEndClock = -9;
+
 export function setViewport(w, h, dpr) {
   W = w;
   H = h;
@@ -33,4 +42,12 @@ export function setClock(v) {
 
 export function setMode(m) {
   mode = m;
+}
+
+export function setDrawingNow(v) {
+  drawingNow = v;
+}
+
+export function markStrokeEnd(t) {
+  strokeEndClock = t;
 }

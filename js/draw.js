@@ -12,7 +12,7 @@
  */
 
 import { THEME, FX, DRAW } from './config.js';
-import { clock } from './state.js';
+import { clock, setDrawingNow, markStrokeEnd } from './state.js';
 import { sprites, hueIndex } from './render.js';
 import { ctx } from './ui.js';
 import { sfx } from './audio.js';
@@ -32,6 +32,11 @@ const sheets = [];
 let live = null;
 /** 手离开画面后等一小会儿再收笔，避免单帧丢失把一笔截断 */
 let lostTime = 0;
+/**
+ * 姿势刚成立、但还没到落笔判定那几帧的指尖轨迹。
+ * 正式落笔时把这段接在笔头前面，写字不会"少一截"。
+ */
+let pending = [];
 
 export const SHAPE_NAMES = { heart: '心形', circle: '圆形', star: '星形', triangle: '三角', square: '方形' };
 export const shapeCount = () => sheets.length;
@@ -39,7 +44,11 @@ export const isDrawing = () => !!live;
 
 /** 撤回刚刚写下的一笔（正在画的那一笔优先丢掉） */
 export function undoStroke() {
-  if (live) { live = null; return 'live'; }
+  if (live) {
+    live = null;
+    setDrawingNow(false);
+    return 'live';
+  }
 
   const sh = sheets[sheets.length - 1];
   if (!sh || !sh.marks || sh.marks.length < 2) {
@@ -59,6 +68,27 @@ export function undoStroke() {
 function beginStroke(x, y) {
   live = { pts: [{ x, y }], born: clock };
   lostTime = 0;
+  pending.length = 0;
+  setDrawingNow(true);
+}
+
+/** 落笔：把姿势稳定期缓存的轨迹接在笔头前面，然后交给 addPoint 继续 */
+function beginFromPending(tip) {
+  const pts = [];
+  for (const p of pending) {
+    const last = pts[pts.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= DRAW.sampleDist) {
+      pts.push({ x: p.x, y: p.y });
+    }
+  }
+  pending.length = 0;
+  // 尾巴上离笔尖太近的点丢掉，避免和第一个点重复
+  while (pts.length && Math.hypot(pts[pts.length - 1].x - tip.x, pts[pts.length - 1].y - tip.y) < DRAW.sampleDist * 0.6) {
+    pts.pop();
+  }
+  beginStroke(tip.x, tip.y);
+  if (pts.length) live.pts = pts.concat(live.pts);
+  while (live.pts.length > DRAW.maxPoints) live.pts.shift();
 }
 
 function addPoint(x, y) {
@@ -82,6 +112,8 @@ function commitStroke() {
   const stroke = live;
   live = null;
   lostTime = 0;
+  setDrawingNow(false);
+  markStrokeEnd(clock);              // 收笔后一小段时间内不认响指（抬手不算弹指）
   if (!stroke || stroke.pts.length < DRAW.minPoints) return;
 
   const pts = stroke.pts;
@@ -172,24 +204,43 @@ function updateSheets(dt) {
 
 /**
  * @param {number} dt 帧时间（60fps 归一）
- * @param {Array} hands 手部状态数组，读 drawing / pts
+ * @param {Array} hands 手部状态数组，读 drawing / drawRaw / pts
  */
 export function updateDraw(dt, hands) {
-  if (FX.draw) {
-    const h = hands.find(x => x.drawing && x.visible > 0.35 && x.pts);
-    if (h) {
-      lostTime = 0;
-      const tip = h.pts[8];            // 食指尖
-      if (live) addPoint(tip.x, tip.y);
-      else beginStroke(tip.x, tip.y);
-    } else if (live) {
-      lostTime += dt / 60;
-      if (lostTime > 0.18) commitStroke();
+  if (!FX.draw) {
+    if (live) {
+      live = null;
+      setDrawingNow(false);          // 关掉功能时直接丢弃未完成的笔画
     }
-  } else if (live) {
-    live = null;                       // 关掉功能时直接丢弃未完成的笔画
+    pending.length = 0;
+    updateSheets(dt);
+    return;
   }
 
+  // drawRaw 也一起找：姿势稳定期的轨迹要先缓存起来，落笔时才能把笔头补回来
+  const h = hands.find(x => x.visible > 0.35 && x.pts && (x.drawing || x.drawRaw));
+
+  if (h) {
+    const tip = h.pts[8];            // 食指尖
+
+    if (h.drawing) {
+      lostTime = 0;
+      if (live) addPoint(tip.x, tip.y);
+      else beginFromPending(tip);
+    } else if (h.drawRaw) {
+      // 还没到落笔判定：先把这几帧的指尖轨迹记下来，落笔时接在笔头前面
+      const last = pending[pending.length - 1];
+      if (!last || Math.hypot(tip.x - last.x, tip.y - last.y) > 2) {
+        pending.push({ x: tip.x, y: tip.y, t: clock });
+      }
+      while (pending.length && clock - pending[0].t > DRAW.preHold) pending.shift();
+    }
+  } else if (live) {
+    lostTime += dt / 60;
+    if (lostTime > 0.18) commitStroke();
+  }
+
+  if (!h) pending.length = 0;
   updateSheets(dt);
 }
 
@@ -267,4 +318,6 @@ export function playDemoShape(cx, cy, r) {
 export function clearShapes() {
   sheets.length = 0;
   live = null;
+  pending.length = 0;
+  setDrawingNow(false);
 }

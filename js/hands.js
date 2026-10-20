@@ -9,11 +9,15 @@
  *   evSnap  {x,y}  打响指
  *   evOpen         张开
  *   evClose        握拳
+ *
+ * "响指"与"单指写字"的区分：姿势几乎一样，靠动作时序 + 拇指/食指的分工来分，
+ * 判定逻辑单独放在 snap.js（纯函数、可测试），这里只负责喂样本和加互斥锁。
  */
 
 import { THEME, GESTURE, FIELD, FX } from './config.js';
-import { clock, mode } from './state.js';
+import { clock, mode, drawingNow, strokeEndClock } from './state.js';
 import { ctx } from './ui.js';
+import { pushSample, makeSample, detectSnap } from './snap.js';
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -38,12 +42,16 @@ export function newHand() {
     pts: null,                      // 21 个关键点（屏幕坐标）
 
     wasPinch: false,
-    midHis: [],                     // 拇指-中指距离历史，用于识别响指
+    midHis: [],                     // 拇指-中指 标度样本历史，用于识别响指
     snapCool: 0,
+    snapAt: -9,                     // 上次响指的秒数（起笔锁 / 麦克风去重都看它）
     gestState: -1,                  // 1 张开 / 0 握拳 / -1 过渡
     gestCool: 0,
 
     drawRaw: false,                 // 本帧是否"食指单指伸出"
+    drawHoldT: 0,                   // 该姿势已连续保持多久（秒）
+    drawLock: false,                // 响指之后的起笔锁
+    midRatio: 1,                    // 拇指-中指 标度距离（当帧）
     drawW: 0,                       // 平滑后的绘形意向 0~1
     drawing: false,                 // 稳定判定结果（防抖）
 
@@ -102,24 +110,31 @@ export function feed(ptsList) {
     if (pinching && !h.wasPinch) h.evPinch = { x: px, y: py };
     h.wasPinch = pinching;
 
-    // 绘形姿势：食指伸出、其余三指收起、且没有在捏合
-    h.drawRaw = ext[0] && !ext[1] && !ext[2] && !ext[3] && !pinching;
+    // 拇指-中指距离：响指的动作就是这一对"合上 → 弹开"
+    const midRatio = dist(pts[4], pts[12]) / palmW;
+    h.midRatio = midRatio;
 
-    // 响指（视觉兜底）：拇指与中指先贴近，再在极短时间里弹开。
-    // 麦克风那条线更准，两条线都会触发 snapBlast。
+    // 刚刚打过响指的话，这一小段里的食指动作是"弹指"的余波，不该起笔
+    h.drawLock = clock - h.snapAt < GESTURE.snapDrawLock;
+
+    // 拇指已经贴住中指 = 在"按压"而不是在"写字"，这一帧不算
+    const pressLike = midRatio < GESTURE.drawMidMin;
+
+    // 绘形姿势：食指伸出、其余三指收起、没在捏合、不在按压、也不在响指余波里
+    h.drawRaw = ext[0] && !ext[1] && !ext[2] && !ext[3]
+      && !pinching && !pressLike && !h.drawLock;
+
+    // 响指：先喂一帧标度样本，再由 snap.js 判定是不是"弹开"的那一下。
+    // 落笔中 / 刚收笔的一小段时间里直接不判——写字时拇指蹭到中指太常见了。
+    // （麦克风那条线更准，两条线都会触发 snapBlast）
     if (mode !== 'demo') {
-      const midRatio = dist(pts[4], pts[12]) / palmW;
-      h.midHis.push({ t: clock, r: midRatio });
-      if (h.midHis.length > 12) h.midHis.shift();
-
-      if (midRatio > GESTURE.snapApart && clock - h.snapCool > GESTURE.snapCooldown) {
-        const wasNear = h.midHis.some(s => s.r < GESTURE.snapNear && clock - s.t < GESTURE.snapWindow);
-        const midStraight = dist(pts[12], wrist) > dist(pts[10], wrist) * GESTURE.extendRatio;
-        const indexApart = pinchRatio > 0.5;   // 排除"拇指食指捏合"误判
-        if (wasNear && midStraight && indexApart) {
-          h.snapCool = clock;
-          h.evSnap = { x: px, y: py };
-        }
+      pushSample(h.midHis, makeSample(pts, palmW, midRatio, clock), 24);
+      const writing = drawingNow || clock - strokeEndClock < GESTURE.strokeSnapLock;
+      if (!writing && clock - h.snapCool > GESTURE.snapCooldown
+          && detectSnap(h.midHis, clock, GESTURE)) {
+        h.snapCool = clock;
+        h.snapAt = clock;
+        h.evSnap = { x: px, y: py };
       }
     }
   });
@@ -128,6 +143,8 @@ export function feed(ptsList) {
     for (const h of hands) {
       h.pts = null;
       h.wasPinch = false;
+      h.midHis.length = 0;      // 手离开画面，历史作废，避免回来时用过期样本判响指
+      h.drawHoldT = 0;
     }
   }
 }
@@ -150,9 +167,13 @@ export function updateHands(dt) {
     h.strength = FIELD.pull - FIELD.pullRange * h.spread;
     h.swirl = FIELD.swirl + FIELD.swirlRange * h.spread;
 
-    // 绘形姿势做防抖：识别结果会抖，单帧抖动不该把一笔断成两笔
+    // 绘形姿势做防抖：识别结果会抖，单帧抖动不该把一笔断成两笔。
+    // 除了平滑，还要求这个姿势连续保持一小会儿才落笔——
+    // 响指"按压 → 弹开"只占很短时间，撑不到 drawHold，所以笔不会先支起来。
     h.drawW += ((h.drawRaw ? 1 : 0) - h.drawW) * Math.min(1, 0.30 * dt);
-    h.drawing = h.drawW > 0.6;
+    const armed = h.drawRaw && h.midRatio >= GESTURE.snapNear;
+    h.drawHoldT = armed ? h.drawHoldT + dt / 60 : 0;
+    h.drawing = h.drawW > 0.6 && h.drawHoldT >= GESTURE.drawHold;
 
     // 开合切换时给一声反馈，让手"有重量"
     const st = h.spread > GESTURE.openAt ? 1 : (h.spread < GESTURE.closeAt ? 0 : -1);
