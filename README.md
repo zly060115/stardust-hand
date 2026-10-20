@@ -256,6 +256,24 @@ Canvas 2D，加法混合（`lighter`）+ 半透明覆盖做拖尾。
 
 ---
 
+## 宣传片
+
+31 秒介绍视频（1080p / 30fps / 合成配乐），成片在 `promo/stardust-hand-promo.mp4`（体积原因不进仓库）。
+画面**由程序本身逐帧渲染**——张开 / 握拳 / 捏合 / 画一颗心 / 写 ZLY / 打响指，
+全部走真实的手势识别管线，不是 AI 生成的画面。
+
+想自己重新生成一版（换文案、换节奏都在 `record/stage.html` 的时间轴里）：
+
+```bash
+python -m http.server 8799                      # 根目录起服务
+node record/drive.mjs frames                    # 逐帧导出（约 1 分钟）
+python record/make_audio.py                     # 合成配乐
+ffmpeg -framerate 30 -i frames/f_%04d.jpg -i record/soundtrack.wav \
+       -c:v libx264 -crf 19 -pix_fmt yuv420p -c:a aac -shortest promo.mp4
+```
+
+---
+
 ## 调参 / 二次开发
 
 **日常微调不用改代码**：右上角 ✦ 面板里能换主题、调密度 / 拖尾 / 引力 / 旋涡 / 转速 / 爆发，

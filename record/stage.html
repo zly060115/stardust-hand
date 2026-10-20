@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>stage</title>
+<link rel="stylesheet" href="../css/style.css" />
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  /* 导出用：固定 1920×1080，别跟着窗口走 */
+  #sky { width: 1920px !important; height: 1080px !important; }
+  /* DOM 上的装饰层不要，画面全部由 canvas 负责 */
+  .grain, .vignette, .hud, .legend, .perf, .toast, .veil, .preview { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<!-- ui.js 在 import 时就会取这些节点，缺一个会在用到时炸 -->
+<video id="cam" playsinline muted></video>
+<div class="veil" id="veil"><div class="card">
+  <div id="veilHint"></div>
+  <button id="startBtn"></button><button id="demoBtn"></button>
+</div></div>
+<div id="toast"></div>
+<div id="preview"></div>
+<button id="muteBtn"></button><button id="tuneBtn"></button>
+<div id="status"></div>
+<div id="perf"></div>
+
+<script type="module">
+import { THEME, DRAW } from '../js/config.js';
+import { clock, setClock, setMode, setViewport, W, H } from '../js/state.js';
+import { canvas, ctx } from '../js/ui.js';
+import { paintBg } from '../js/viewport.js';
+import { P, initParticles, updateParticles, drawStars, drawNebula } from '../js/particles.js';
+import { feed, hands, updateHands, drawHand, demoPoints } from '../js/hands.js';
+import {
+  snapBlast, emitSparks, updateSparks, updateBursts,
+  consumeHandEvents, drawSparks, drawBursts,
+} from '../js/effects.js';
+import { updateDraw, drawShapes } from '../js/draw.js';
+
+const FPS = 60;          // 模拟步长固定 60Hz
+const SUB = 2;           // 每个输出帧跑几个模拟步（输出 30fps）
+const DURATION = 31.2;
+
+const RW = 1920, RH = 1080;
+
+setMode('demo');         // 不让 hands.js 自己判响指，节奏由时间轴控制
+
+// 固定画布尺寸，不依赖浏览器窗口
+canvas.width = RW;
+canvas.height = RH;
+ctx.setTransform(1, 0, 0, 1, 0, 0);
+setViewport(RW, RH, 1);
+paintBg();
+
+initParticles();
+
+const s = Math.min(W, H) / 1000;
+const lerp = (a, b, k) => a + (b - a) * k;
+const clamp01 = (v) => v < 0 ? 0 : (v > 1 ? 1 : v);
+const smooth = (v) => { const k = clamp01(v); return k * k * (3 - 2 * k); };
+/** 区间内的归一化进度 */
+const seg = (t, a, b) => smooth((t - a) / (b - a));
+
+/* ================= 手的姿态合成 ================= */
+
+/** 食指尖为原点、掌心在下方的标准"持笔手"，单位是像素（scale=1 时掌宽约 52） */
+const PEN_LOCAL = [
+  [20, 180],                                              // 0 腕
+  [-18, 158], [-34, 142], [-44, 136], [-8, 115],          // 1-4 拇指
+  [8, 100], [4, 60], [2, 30], [0, 0],                     // 5-8 食指（8 是笔尖）
+  [26, 95], [30, 45], [26, 68], [20, 90],                 // 9-12 中指（蜷）
+  [42, 100], [46, 52], [42, 75], [36, 96],                // 13-16 无名指（蜷）
+  [58, 108], [60, 64], [56, 85], [50, 102],               // 17-20 小指（蜷）
+];
+
+/** 持笔手：笔尖在 (tx,ty)，整体旋转 ang */
+function penHand(tx, ty, ang = 0.16, scale = 2.0) {
+  const c = Math.cos(ang), sn = Math.sin(ang);
+  return PEN_LOCAL.map(([x, y]) => {
+    const lx = x * scale, ly = y * scale;
+    return { x: tx + lx * c - ly * sn, y: ty + lx * sn + ly * c };
+  });
+}
+
+/** 张开/握拳的手：直接复用演示用的程序化手（和真实关键点同构） */
+function openHand(cx, cy, spread) {
+  return demoPoints(cx, cy, spread, s * 1.05);
+}
+
+/** 两套 21 点姿势之间逐点插值，用来做"手型渐变"，避免骨架硬跳 */
+function mixPts(a, b, k) {
+  const out = new Array(21);
+  for (let i = 0; i < 21; i++) {
+    out[i] = { x: lerp(a[i].x, b[i].x, k), y: lerp(a[i].y, b[i].y, k) };
+  }
+  return out;
+}
+
+/* ================= 笔迹路径 ================= */
+
+const HEART_C = { x: W * 0.5, y: H * 0.365 };
+const HEART_R = Math.min(W, H) * 0.175;
+
+function heartPoint(k) {           // k: 0..1 绕一圈
+  const t = k * Math.PI * 2;
+  const x = 16 * Math.pow(Math.sin(t), 3);
+  const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+  return { x: HEART_C.x + (x / 16) * HEART_R, y: HEART_C.y - (y / 17) * HEART_R };
+}
+
+/** 字母骨架：单位方框内的折线（Y 向下），每个字母是一串"笔画" */
+const LETTERS = {
+  Z: [[[0, 0], [0.86, 0], [0, 1], [0.86, 1]]],
+  L: [[[0, 0], [0, 1]], [[0, 1], [0.8, 1]]],
+  Y: [[[0, 0], [0.45, 0.52], [0.9, 0]], [[0.45, 0.52], [0.45, 1]]],
+};
+
+const LETTER_BASE = { x: W * 0.5, y: H * 0.70, w: 130 * s, h: 170 * s, gap: 215 * s };
+/** 三个字母横向排开：Z 在左、L 居中、Y 在右 */
+const LETTER_SLOT = { Z: -1, L: 0, Y: 1 };
+
+function letterPoint(ch, si, k) {
+  const chain = LETTERS[ch][si];
+  // 按段长分配参数
+  let total = 0;
+  const segs = [];
+  for (let i = 1; i < chain.length; i++) {
+    const d = Math.hypot(chain[i][0] - chain[i - 1][0], chain[i][1] - chain[i - 1][1]);
+    segs.push(d);
+    total += d;
+  }
+  let dist = k * total;
+  let i = 0;
+  while (i < segs.length && dist > segs[i]) { dist -= segs[i]; i++; }
+  i = Math.min(i, segs.length - 1);
+  const p = chain[i], q = chain[i + 1];
+  const f = segs[i] ? clamp01(dist / segs[i]) : 0;
+  const u = lerp(p[0], q[0], f), v = lerp(p[1], q[1], f);
+  return {
+    x: LETTER_BASE.x + LETTER_SLOT[ch] * LETTER_BASE.gap + (u - 0.45) * LETTER_BASE.w,
+    y: LETTER_BASE.y + (v - 0.5) * LETTER_BASE.h,
+  };
+}
+
+/* ================= 时间轴 ================= */
+
+const T = {
+  in:       [2.3, 4.2],     // 手从下方升起来
+  open1:    [4.2, 6.3],
+  fist:     [6.6, 9.2],
+  drift:    [9.4, 12.2],
+  pinch:    [12.6, 15.0],
+  heart:    [15.3, 17.75],
+  letters:  [18.2, 23.0],
+  snap:     [23.0, 26.2],
+  end:      [26.4, 31.2],
+};
+
+/** 书写节奏：[字母, 笔画, 开始, 结束] */
+const WRITE = [
+  ['Z', 0, 18.35, 19.55],
+  ['L', 0, 19.95, 20.50],
+  ['L', 1, 20.72, 21.15],
+  ['Y', 0, 21.55, 22.30],
+  ['Y', 1, 22.48, 22.92],
+];
+
+/** 全部笔画（心 + 字母），按时间排好，笔在笔画间平滑移动 */
+const STROKES = [
+  { a: T.heart[0], b: T.heart[1], at: heartPoint },
+  ...WRITE.map(([ch, si, a, b]) => ({ a, b, at: (k) => letterPoint(ch, si, k) })),
+].sort((x, y) => x.a - y.a);
+
+/** 书写段落：当前笔尖位置 + 是否落笔 */
+function penState(t) {
+  for (const st of STROKES) {
+    if (t >= st.a && t <= st.b) {
+      const p = st.at((t - st.a) / (st.b - st.a));
+      return { down: true, x: p.x, y: p.y, ang: 0.16 };
+    }
+  }
+  // 抬笔：在上一笔终点和下一笔起点之间平滑移动
+  let prev = null, next = null;
+  for (const st of STROKES) {
+    if (st.b <= t) prev = st;
+    if (!next && st.a > t) next = st;
+  }
+  if (prev && next && t < T.snap[0] + 0.01) {
+    const k = seg(t, prev.b, next.a);
+    const p0 = prev.at(1), p1 = next.at(0);
+    return { down: false, x: lerp(p0.x, p1.x, k), y: lerp(p0.y, p1.y, k), ang: 0.16 };
+  }
+  // 心形写完、字母还没开始的那段
+  if (t > T.heart[1] && t < T.letters[0]) {
+    const p = heartPoint(1);
+    return { down: false, x: p.x, y: p.y, ang: 0.16 };
+  }
+  return null;
+}
+
+/** 当前时刻的手心位置（用于非书写段落） */
+function handCenter(t) {
+  if (t < T.open1[1]) {
+    const k = seg(t, T.in[0], T.in[1]);
+    return { x: W * 0.5, y: lerp(H + 220 * s, H * 0.54, k) };
+  }
+  if (t < T.fist[1]) {
+    return { x: W * 0.5, y: H * 0.54 };
+  }
+  if (t < T.drift[1]) {
+    const k = seg(t, T.fist[1], T.drift[1]);
+    return { x: W * 0.5 + Math.sin(k * Math.PI * 1.7) * W * 0.17, y: H * 0.52 + Math.sin(k * 3) * H * 0.03 };
+  }
+  const k = seg(t, T.pinch[0], T.heart[0]);
+  return { x: lerp(W * 0.5, W * 0.5, k), y: lerp(H * 0.52, H * 0.54, k) };
+}
+
+/** 非书写段落的手型：张开度随剧情走 */
+function handSpread(t) {
+  if (t < T.open1[1]) return lerp(0.18, 0.95, seg(t, T.in[0], T.in[1]));
+  if (t < T.fist[0]) return 0.95;
+  if (t < T.fist[1]) {
+    const k = seg(t, T.fist[0] + 0.15, T.fist[0] + 0.95);
+    return lerp(0.95, 0.04, k);
+  }
+  if (t < T.drift[0]) return 0.04;
+  if (t < T.drift[1]) return lerp(0.04, 0.95, seg(t, T.drift[0], T.drift[0] + 0.7));
+  return 0.85;
+}
+
+/** 持笔手的缩放：掌宽约 78px，看起来像 50cm 外的手 */
+const PEN_S = 1.5 * s;
+
+const SNAP_AT = 24.15;
+let snapped = false;
+
+/**
+ * 生成这一帧的 21 个关键点。返回 null 表示"画面里没有手"。
+ */
+function handAt(t) {
+  const pen = penState(t);
+  const lastPen = letterPoint('Y', 1, 1);      // 最后一笔的终点，用来做手型渐变
+
+  // ① 书写段落（含前后抬笔）
+  if (pen) {
+    const ph = penHand(pen.x, pen.y, pen.ang, PEN_S);
+    // 张开手 → 持笔手：逐点插值，骨架不会硬跳
+    const inK = seg(t, T.heart[0] - 0.08, T.heart[0] + 0.40);
+    if (inK < 1) {
+      const c = handCenter(t);
+      return mixPts(openHand(c.x, c.y, 0.85), ph, inK);
+    }
+    return ph;
+  }
+
+  // ② 响指（张开手 + 拇指按压 / 弹开）
+  if (t >= T.snap[0] && t < T.end[1]) {
+    const c = handCenter(t);
+    const before = penHand(lastPen.x, lastPen.y, 0.16, PEN_S);
+    const k = seg(t, T.snap[0], T.snap[0] + 0.40);
+    const pts = mixPts(before, openHand(c.x, c.y - 40 * s, 0.95), k);
+
+    // 拇指先贴住中指，再甩开
+    const press = t < SNAP_AT
+      ? lerp(0, 1, seg(t, SNAP_AT - 0.30, SNAP_AT - 0.06))
+      : 1 - seg(t, SNAP_AT, SNAP_AT + 0.18);
+    const base = { x: pts[4].x, y: pts[4].y };
+    pts[4] = {
+      x: lerp(base.x, pts[12].x, press * 0.92),
+      y: lerp(base.y, pts[12].y, press * 0.92),
+    };
+    // 爆开那一下手整体一震
+    if (t > SNAP_AT && t < SNAP_AT + 0.25) {
+      const a = (1 - seg(t, SNAP_AT, SNAP_AT + 0.25)) * 7;
+      for (const p of pts) { p.x += (Math.random() - 0.5) * a; p.y += (Math.random() - 0.5) * a; }
+    }
+    // 退场
+    if (t > T.end[0]) {
+      const e = seg(t, T.end[0], T.end[1] - 0.3);
+      for (const p of pts) p.y += e * 760 * s;
+    }
+    return pts;
+  }
+
+  // ③ 其它：张开 / 握拳 / 移动 / 捏合
+  if (t < T.end[0]) {
+    const c = handCenter(t);
+    // 拇指按向食指 → hands.js 的捏合判定 → 掌心超新星（真实事件链）
+    if (t >= T.pinch[0] && t < T.pinch[1]) {
+      const pts = openHand(c.x, c.y, 0.85);
+      const press = t < 14.2 ? seg(t, 13.35, 13.62) : 1 - seg(t, 14.2, 14.45);
+      pts[4] = {
+        x: lerp(pts[4].x, pts[8].x, press),
+        y: lerp(pts[4].y, pts[8].y, press),
+      };
+      return pts;
+    }
+    return openHand(c.x, c.y, handSpread(t));
+  }
+  return null;
+}
+
+/* ================= 覆盖层（字幕 / 标题 / 暗角） ================= */
+
+const FONT = '"Microsoft YaHei", "PingFang SC", sans-serif';
+
+function spaced(ctx, text, x, y, gap, align = 'center') {
+  const chars = [...text];
+  let total = 0;
+  for (const ch of chars) total += ctx.measureText(ch).width;
+  total += gap * (chars.length - 1);
+  let cx = align === 'center' ? x - total / 2 : x;
+  for (const ch of chars) {
+    ctx.fillText(ch, cx, y);
+    cx += ctx.measureText(ch).width + gap;
+  }
+}
+
+const CAPTIONS = [
+  [3.1, 6.2, '张开手掌', '星云旋臂展开，指尖迸出火星'],
+  [6.9, 9.1, '握紧拳头', '星尘向掌心塌缩成核'],
+  [9.8, 12.1, '移动手掌', '拖动整片星空'],
+  [12.9, 14.8, '拇指食指捏合', '超新星爆发'],
+  [15.6, 17.7, '伸出食指', '在空中画一颗心'],
+  [18.8, 23.0, '也能写字', '想写什么就写什么'],
+  [23.5, 26.0, '打个响指', '全场星尘轰然炸开'],
+];
+
+function captionAlpha(t, a, b) {
+  const fin = 0.45, fout = 0.45;
+  if (t < a || t > b) return 0;
+  return Math.min(1, Math.min((t - a) / fin, (b - t) / fout));
+}
+
+/* ---- 笔迹的发光描边（导出画面里笔迹要看得清，成形的活儿交给粒子） ---- */
+
+const GLOW_FADE = 0.7;   // 收笔后发光再停留多久
+
+function chainSample(ch, si, k, n) {
+  const out = [];
+  for (let i = 0; i <= n; i++) out.push(letterPoint(ch, si, (i / n) * k));
+  return out;
+}
+
+/** 当前应当发光的笔画：[{pts, alpha, tip}] */
+function glowStrokes(t) {
+  const out = [];
+  // 心形
+  {
+    const a = T.heart[0], b = T.heart[1];
+    if (t >= a && t <= b + GLOW_FADE) {
+      const k = clamp01((t - a) / (b - a));
+      const n = Math.max(2, Math.round(k * 140));
+      const pts = [];
+      for (let i = 0; i <= n; i++) pts.push(heartPoint((i / n) * k));
+      out.push({ pts, alpha: t <= b ? 1 : 1 - (t - b) / GLOW_FADE, tip: t <= b });
+    }
+  }
+  // 字母
+  for (const [ch, si, a, b] of WRITE) {
+    if (t >= a && t <= b + GLOW_FADE) {
+      const k = clamp01((t - a) / (b - a));
+      const pts = chainSample(ch, si, k, Math.max(2, Math.round(k * 70)));
+      out.push({ pts, alpha: t <= b ? 1 : 1 - (t - b) / GLOW_FADE, tip: t <= b });
+    }
+  }
+  return out;
+}
+
+function drawOverlay(t) {
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+
+  // 暗角：把注意力收到画面中心
+  const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.28, W / 2, H / 2, Math.max(W, H) * 0.72);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.62)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 笔迹发光：加法混合叠一条亮线 + 笔尖亮点
+  for (const g of glowStrokes(t)) {
+    if (g.pts.length < 2 || g.alpha <= 0.01) continue;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(255,200,120,0.9)';
+    ctx.shadowBlur = 16 * s;
+    ctx.strokeStyle = `rgba(255,224,175,${0.5 * g.alpha})`;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(g.pts[0].x, g.pts[0].y);
+    for (let i = 1; i < g.pts.length; i++) ctx.lineTo(g.pts[i].x, g.pts[i].y);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255,248,232,${0.75 * g.alpha})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    if (g.tip) {
+      const tip = g.pts[g.pts.length - 1];
+      ctx.shadowBlur = 26 * s;
+      ctx.fillStyle = `rgba(255,246,225,${0.95 * g.alpha})`;
+      ctx.beginPath();
+      ctx.arc(tip.x, tip.y, 3.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // 开场标题
+  const titleA = Math.min(seg(t, 0.35, 1.3), 1 - seg(t, 2.5, 3.1));
+  if (titleA > 0.01) {
+    ctx.globalAlpha = titleA;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(255,214,150,0.85)';
+    ctx.shadowBlur = 34;
+    ctx.fillStyle = 'rgba(255,242,220,0.96)';
+    ctx.font = `600 ${Math.round(96 * s)}px ${FONT}`;
+    spaced(ctx, '星尘 · 手', W / 2, H * 0.46, 10 * s);
+    ctx.shadowBlur = 16;
+    ctx.globalAlpha = titleA * 0.72;
+    ctx.fillStyle = 'rgba(255,226,180,0.9)';
+    ctx.font = `400 ${Math.round(20 * s)}px ${FONT}`;
+    spaced(ctx, 'STARDUST  HAND', W / 2, H * 0.46 + 78 * s, 12 * s);
+    ctx.shadowBlur = 0;
+  }
+
+  // 分段字幕
+  for (const [a, b, head, sub] of CAPTIONS) {
+    const al = captionAlpha(t, a, b);
+    if (al <= 0.01) continue;
+    const rise = (1 - Math.min(1, (t - a) / 0.5)) * 14 * s;
+    ctx.globalAlpha = al;
+    ctx.textBaseline = 'alphabetic';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = 'rgba(255,246,232,0.97)';
+    ctx.font = `600 ${Math.round(44 * s)}px ${FONT}`;
+    spaced(ctx, head, W / 2, H * 0.86 + rise, 6 * s);
+    ctx.globalAlpha = al * 0.66;
+    ctx.fillStyle = 'rgba(255,232,200,0.92)';
+    ctx.font = `400 ${Math.round(24 * s)}px ${FONT}`;
+    spaced(ctx, sub, W / 2, H * 0.86 + 46 * s + rise, 3 * s);
+    ctx.shadowBlur = 0;
+  }
+
+  // 片尾卡
+  const endA = seg(t, 27.5, 28.5);
+  if (endA > 0.01) {
+    ctx.globalAlpha = endA;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(255,205,140,0.8)';
+    ctx.shadowBlur = 40;
+    ctx.fillStyle = 'rgba(255,244,226,0.98)';
+    ctx.font = `600 ${Math.round(104 * s)}px ${FONT}`;
+    spaced(ctx, '星尘 · 手', W / 2, H * 0.40, 12 * s);
+
+    ctx.shadowBlur = 14;
+    ctx.globalAlpha = endA * 0.7;
+    ctx.font = `400 ${Math.round(20 * s)}px ${FONT}`;
+    spaced(ctx, 'STARDUST  HAND', W / 2, H * 0.40 + 84 * s, 13 * s);
+
+    ctx.shadowBlur = 20;
+    ctx.globalAlpha = endA * 0.92;
+    ctx.fillStyle = 'rgba(255,240,222,0.95)';
+    ctx.font = `400 ${Math.round(32 * s)}px ${FONT}`;
+    spaced(ctx, '一只手，一片星空', W / 2, H * 0.55, 5 * s);
+
+    ctx.globalAlpha = endA * 0.62;
+    ctx.font = `400 ${Math.round(24 * s)}px ${FONT}`;
+    ctx.fillStyle = 'rgba(255,228,190,0.95)';
+    spaced(ctx, 'github.com/zly060115/stardust-hand', W / 2, H * 0.638, 1.5 * s);
+
+    ctx.globalAlpha = endA * 0.42;
+    ctx.font = `400 ${Math.round(19 * s)}px ${FONT}`;
+    spaced(ctx, 'MIT 开源 · 双击即可运行 · 画面与声音全部本地计算', W / 2, H * 0.70, 2 * s);
+    ctx.shadowBlur = 0;
+  }
+
+  // 开头/结尾的整体淡入淡出
+  const black = Math.max(1 - seg(t, 0.0, 1.1), seg(t, 30.4, 31.2));
+  if (black > 0.001) {
+    ctx.globalAlpha = black;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.restore();
+}
+
+/* ================= 每帧推进 ================= */
+
+function simulate() {
+  const t = clock;
+  const pts = handAt(t);
+  feed(pts ? [pts] : []);
+
+  // 画面里的手 → 物理 / 火星 / 骨架
+  updateHands(1);
+
+  // 绘形用手势代理：落笔时机由时间轴精确控制，几何仍然用同一只手的食指尖
+  const pen = penState(t);
+  const proxy = {
+    visible: pts ? 1 : 0,
+    pts: pts || null,
+    drawing: !!(pen && pen.down),
+    drawRaw: !!(pen && pen.down),
+  };
+  updateDraw(1, [proxy]);
+
+  consumeHandEvents(hands);      // 捏合 → 掌心超新星（真实事件）
+  updateParticles(1, hands);
+  emitSparks(1, hands);
+  updateSparks(1);
+  updateBursts(1);
+}
+
+function render() {
+  const ctx = canvas.getContext('2d');
+  const t = clock;
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = THEME.trail;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  drawStars(t);
+  drawNebula();
+  drawShapes(t);
+  drawSparks();
+  drawBursts();
+  for (const h of hands) drawHand(h, t);
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+let frameNo = 0;
+
+/** 推进一个模拟步（60Hz），并处理时间轴上的手动触发 */
+function advance() {
+  setClock(clock + 1 / FPS);
+  simulate();
+  if (!snapped && clock >= SNAP_AT) {
+    snapped = true;
+    snapBlast(W * 0.5, H * 0.5);
+  }
+  // 响指之后，让写下的心形和字母跟着星空一起淡出，给片尾卡让位
+  // （最后一笔约在 23.1s 凝固，把寿命压到 6.1s → 29.2s 左右淡完）
+  if (clock >= 26.4 && DRAW.life > 6.2) DRAW.life = 6.1;
+}
+
+/**
+ * 推进并导出这一帧（JPEG base64）。
+ * 每次调用固定推进 1/30 秒（内部跑 2 个 60Hz 模拟步）。
+ */
+window.__frame = function () {
+  for (let i = 0; i < SUB; i++) advance();
+  render();
+  drawOverlay(clock);
+  frameNo++;
+  return canvas.toDataURL('image/jpeg', 0.93);
+};
+
+/** 调试用：只推进不导出，快速跳到某个时刻 */
+window.__fastTo = function (tt) {
+  let guard = 0;
+  while (clock < tt && guard++ < 100000) advance();
+  return clock;
+};
+
+/** 调试用：只渲染当前状态，不推进（先铺一次不透明底色，避免上一帧残影） */
+window.__peek = function () {
+  paintBg();
+  render();
+  drawOverlay(clock);
+  return canvas.toDataURL('image/jpeg', 0.93);
+};
+
+window.__meta = function () {
+  return { w: canvas.width, h: canvas.height, ww: W, hh: H, frames: Math.round(DURATION * FPS / SUB) };
+};
+
+window.__ready = true;
+</script>
+</body>
+</html>

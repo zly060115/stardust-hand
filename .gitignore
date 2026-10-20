@@ -15,3 +15,7 @@ npm-debug.log*
 # Temp
 *.tmp
 _check.mjs
+
+# 宣传片成片（太大不进仓库，用 record/ 里的脚本重新生成）
+promo/
+record/soundtrack.wav
