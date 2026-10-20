@@ -29,8 +29,15 @@ export function resizeCanvas() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   S.setViewport(w, h, dpr);
 
-  ctx.fillStyle = THEME.bgFill;
-  ctx.fillRect(0, 0, w, h);
+  paintBg();
 
   return { prevW, prevH };
+}
+
+/** 用当前底色整块重铺一次：换主题时把旧配色的残影一次清掉 */
+export function paintBg() {
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = THEME.bgFill;
+  ctx.fillRect(0, 0, S.W, S.H);
 }

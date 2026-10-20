@@ -11,7 +11,7 @@
  *   evClose        握拳
  */
 
-import { THEME, GESTURE, FIELD } from './config.js';
+import { THEME, GESTURE, FIELD, FX } from './config.js';
 import { clock, mode } from './state.js';
 import { ctx } from './ui.js';
 
@@ -43,6 +43,10 @@ export function newHand() {
     gestState: -1,                  // 1 张开 / 0 握拳 / -1 过渡
     gestCool: 0,
 
+    drawRaw: false,                 // 本帧是否"食指单指伸出"
+    drawW: 0,                       // 平滑后的绘形意向 0~1
+    drawing: false,                 // 稳定判定结果（防抖）
+
     evPinch: null,
     evSnap: null,
     evOpen: false,
@@ -58,7 +62,10 @@ export const hands = [newHand(), newHand()];
  * @param {Array<Array<{x:number,y:number}>>} ptsList 每只手 21 个点，已映射到屏幕坐标
  */
 export function feed(ptsList) {
-  for (const h of hands) h.seen = false;
+  for (const h of hands) {
+    h.seen = false;
+    h.drawRaw = false;
+  }
 
   ptsList.forEach((pts, i) => {
     if (i > 1) return;
@@ -78,14 +85,14 @@ export function feed(ptsList) {
     h.ty = py;
 
     // 伸展判定：指尖离手腕明显比中节远 → 该指伸直
-    let ext = 0;
     const pairs = [[8, 6], [12, 10], [16, 14], [20, 18]];
-    for (const [tip, pip] of pairs) {
-      if (dist(pts[tip], wrist) > dist(pts[pip], wrist) * GESTURE.extendRatio) ext++;
-    }
+    const ext = pairs.map(([tip, pip]) =>
+      dist(pts[tip], wrist) > dist(pts[pip], wrist) * GESTURE.extendRatio);
+    let extCount = 0;
+    for (const e of ext) if (e) extCount++;
     const thumbUp = dist(pts[4], pts[17]) > dist(pts[3], pts[17]) * GESTURE.thumbRatio ? 1 : 0;
 
-    let spread = (ext + thumbUp * 0.9) / 4.9;
+    let spread = (extCount + thumbUp * 0.9) / 4.9;
     spread = Math.max(0, Math.min(1, spread));
     h.tSpread = spread;
 
@@ -94,6 +101,9 @@ export function feed(ptsList) {
     const pinching = pinchRatio < GESTURE.pinch && spread > GESTURE.pinchSpread;
     if (pinching && !h.wasPinch) h.evPinch = { x: px, y: py };
     h.wasPinch = pinching;
+
+    // 绘形姿势：食指伸出、其余三指收起、且没有在捏合
+    h.drawRaw = ext[0] && !ext[1] && !ext[2] && !ext[3] && !pinching;
 
     // 响指（视觉兜底）：拇指与中指先贴近，再在极短时间里弹开。
     // 麦克风那条线更准，两条线都会触发 snapBlast。
@@ -140,6 +150,10 @@ export function updateHands(dt) {
     h.strength = FIELD.pull - FIELD.pullRange * h.spread;
     h.swirl = FIELD.swirl + FIELD.swirlRange * h.spread;
 
+    // 绘形姿势做防抖：识别结果会抖，单帧抖动不该把一笔断成两笔
+    h.drawW += ((h.drawRaw ? 1 : 0) - h.drawW) * Math.min(1, 0.30 * dt);
+    h.drawing = h.drawW > 0.6;
+
     // 开合切换时给一声反馈，让手"有重量"
     const st = h.spread > GESTURE.openAt ? 1 : (h.spread < GESTURE.closeAt ? 0 : -1);
     if (st >= 0 && st !== h.gestState && clock - h.gestCool > GESTURE.stateCooldown) {
@@ -162,7 +176,7 @@ export function drawHand(h, t) {
   const hue = warm ? THEME.warmHue : THEME.handHue;
   const pulse = 0.5 + 0.5 * Math.sin(t * (warm ? 6.5 : 2.4));
 
-  // 掌心光晕
+  // 掌心光晕（这个始终保留：没有它手就"不在场"了）
   const rad = h.scale * (0.95 + h.spread * 0.9) * (0.92 + pulse * 0.12);
   const g = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, rad);
   const coreA = (warm ? 0.20 : 0.12) * v;
@@ -174,6 +188,12 @@ export function drawHand(h, t) {
   ctx.beginPath();
   ctx.arc(h.x, h.y, rad, 0, Math.PI * 2);
   ctx.fill();
+
+  // 骨架：面板里可以关掉，只留光晕（更像纯粹的星尘）
+  if (!FX.skeleton) {
+    ctx.globalAlpha = 1;
+    return;
+  }
 
   // 骨架：外发光层 + 内核层（同一路径连画两次，省一次构建）
   const pts = h.pts;
@@ -194,7 +214,7 @@ export function drawHand(h, t) {
   ctx.stroke();
 
   // 关节与指尖
-  ctx.fillStyle = `hsla(45,100%,90%,${0.75 * v})`;
+  ctx.fillStyle = `hsla(${hue},100%,92%,${0.75 * v})`;
   for (let i = 0; i < pts.length; i++) {
     const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
     const rr = isTip ? 2.4 + pulse * 1.1 : 1.1;

@@ -5,7 +5,7 @@
  * 手部力场从参数注入（updateParticles(dt, hands)），所以本模块不依赖手势模块。
  */
 
-import { THEME, SCALE, GALAXY, FIELD, MOTION } from './config.js';
+import { THEME, SCALE, GALAXY, FIELD, MOTION, FX } from './config.js';
 import { W, H, CX, CY } from './state.js';
 import { sprites, hueIndex } from './render.js';
 import { ctx } from './ui.js';
@@ -19,6 +19,29 @@ export const rand = (a, b) => a + Math.random() * (b - a);
 
 /** 五个指尖的关键点下标：拇指、食指、中指、无名指、小指 */
 export const TIPS = [4, 8, 12, 16, 20];
+
+/**
+ * 两个色相之间的插值，走 360 度圆上的最短路径。
+ * 直接用线性插值会让「350° → 10°」穿过 180°（绿色），换主题时会出现一圈荧光绿。
+ */
+function mixHue(a, b, t) {
+  const d = ((b - a + 540) % 360) - 180;
+  return (a + d * t + 360) % 360;
+}
+
+/** 按当前主题把一个粒子重新上色（半径决定核心色 → 外围色的过渡） */
+function tint(p) {
+  const dx = p.x - CX;
+  const dy = p.y - CY;
+  const r = Math.sqrt(dx * dx + dy * dy);
+  const rr = Math.min(1, r / (Math.min(W, H) * 0.8));
+  p.ci = hueIndex(mixHue(THEME.innerHue, THEME.outerHue, rr) + rand(-4, 4));
+}
+
+/** 换主题后调用：已有粒子立刻换到新配色，不用等它们飞出去重生 */
+export function refreshHues() {
+  for (const p of P) tint(p);
+}
 
 /** 重置一个粒子的位置与外观。centerBias = 落在星系核心附近 */
 export function spawnNebula(p, centerBias) {
@@ -41,19 +64,20 @@ export function spawnNebula(p, centerBias) {
   p.vy = rand(-0.4, 0.4);
   p.z = Math.random();                 // 视深：越大越近越亮
   p.size = 0.6 + p.z * 2.3;
-
-  // 色相随半径从核心金 → 外围橙红
-  const rr = Math.min(1, r / (Math.min(W, H) * 0.8));
-  p.ci = hueIndex(THEME.innerHue - rr * (THEME.innerHue - THEME.outerHue) + rand(-4, 4));
   p.spin = 1 + (1 - p.z) * 0.6;
   p.boost = 0;
+
+  tint(p);                             // 色相随半径从核心金 → 外围橙红
 }
 
 /** 按窗口面积决定粒子数量，重新铺满整片星空 */
 export function initParticles() {
   P.length = 0;
   const area = W * H;
-  const n = Math.round(Math.min(SCALE.nebula.max, Math.max(SCALE.nebula.min, area / SCALE.nebula.areaDiv)));
+  const fixed = SCALE.nebula.fixed | 0;
+  const n = fixed > 0
+    ? fixed
+    : Math.round(Math.min(SCALE.nebula.max, Math.max(SCALE.nebula.min, area / SCALE.nebula.areaDiv)));
   const sn = Math.round(Math.min(SCALE.stars.max, Math.max(SCALE.stars.min, area / SCALE.stars.areaDiv)));
 
   for (let i = 0; i < n; i++) {
@@ -73,6 +97,23 @@ export function initParticles() {
       ph: rand(0, 6.28),
     });
   }
+}
+
+/**
+ * 面板调密度：原地增删粒子，不重建整片星空。
+ * 减少时从尾部裁掉，增加时补在星系外围，画面不会整块跳变。
+ */
+export function setDensity(n) {
+  const target = Math.max(400, Math.min(6000, Math.round(n)));
+  SCALE.nebula.fixed = target;
+
+  while (P.length > target) P.pop();
+  while (P.length < target) {
+    const p = {};
+    spawnNebula(p, false);
+    P.push(p);
+  }
+  return target;
 }
 
 /** 窗口尺寸变化后，把已有粒子按比例挪到新位置（不重新生成，避免画面跳变） */
@@ -201,11 +242,13 @@ export function updateParticles(dt, hands) {
 
 /** 远景星点：缓慢闪烁 */
 export function drawStars(t) {
+  if (!FX.stars) return;
   const fill = THEME.star;
+  const gain = THEME.starBright;
   ctx.fillStyle = fill;
   for (let i = 0; i < stars.length; i++) {
     const s = stars[i];
-    ctx.globalAlpha = s.a * (0.55 + 0.45 * Math.sin(t * s.tw + s.ph));
+    ctx.globalAlpha = Math.min(1, s.a * gain * (0.55 + 0.45 * Math.sin(t * s.tw + s.ph)));
     ctx.fillRect(s.x, s.y, s.s, s.s);
   }
 }

@@ -14,6 +14,7 @@ export const previewEl = document.getElementById('preview');
 export const startBtn = document.getElementById('startBtn');
 export const demoBtn = document.getElementById('demoBtn');
 export const muteBtn = document.getElementById('muteBtn');
+export const tuneBtn = document.getElementById('tuneBtn');
 const statusEl = document.getElementById('status');
 const perfEl = document.getElementById('perf');
 
@@ -66,6 +67,16 @@ export function setPreview(on) {
 /** 音量按钮：显示 / 隐藏 / 静音划线 */
 export function showMuteBtn(show) {
   muteBtn.classList.toggle('live', show);
+}
+
+/** 调节面板按钮：和音量按钮一起出现 */
+export function showTuneBtn(show) {
+  tuneBtn.classList.toggle('live', show);
+}
+
+/** 面板打开时按钮高亮 */
+export function setTuneActive(on) {
+  tuneBtn.classList.toggle('on', on);
 }
 
 export function setMuteIcon(muted) {

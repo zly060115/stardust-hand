@@ -5,11 +5,16 @@
  * 数值都有实测依据，改得太大会让物理失衡（比如把 pull 调到 10，星尘会瞬间糊成一团）。
  */
 
-/** 配色：整个作品只有一个色盘 */
+/**
+ * 配色：整个作品只有一个色盘。
+ * 这些字段会被 settings.applySettings() 在运行时整体改写（换主题 / 换预设），
+ * 所以其它模块必须每次用到时读 THEME.xxx，不要把它解构成局部常量。
+ */
 export const THEME = {
   bgFill: '#0a0704',                 // 画布底色（暖黑）
   trail: 'rgba(10,7,4,0.168)',       // 拖尾：越小残影越长
   star: '#ffeecb',                   // 远景星点
+  starBright: 1,                     // 星点亮度倍率（面板可调）
   innerHue: 47,                      // 星系核心：金黄
   outerHue: 22,                      // 外围：橙红
   handHue: 43,                       // 骨架 / 掌心光晕
@@ -19,16 +24,45 @@ export const THEME = {
 
 /** 粒子规模：按屏幕面积自适应，min/max 是为了照顾低端机和大屏 */
 export const SCALE = {
-  nebula: { max: 2600, min: 1200, areaDiv: 760 },
+  // fixed > 0 时直接用固定数量（面板手动调密度后就不再随窗口自适应）
+  nebula: { max: 2600, min: 1200, areaDiv: 760, fixed: 0 },
   stars: { max: 1400, min: 700, areaDiv: 1500 },
 };
 
 /** 光点贴图：预生成一组不同色相的径向渐变小图，绘制时直接 drawImage */
 export const SPRITE = {
-  steps: 52,
+  steps: 72,
   hueMin: 0,
-  hueStep: 3,     // 覆盖 0 ~ 153 度
+  hueStep: 5,     // 覆盖 0 ~ 355 度：任何主题色相都能命中一张贴图
   size: 64,
+};
+
+/**
+ * 效果开关：面板上的复选框直接落到这里，各模块绘制前判断。
+ * 关掉只是不画 / 不发生，不影响物理与识别。
+ */
+export const FX = {
+  sparks: true,     // 指尖火星
+  skeleton: true,   // 手掌骨架与关节点（掌心光晕始终保留）
+  stars: true,      // 背景远景星
+  draw: true,       // 指尖绘形
+  autoShape: true,  // 画闭合图形时自动规整成标准形状
+};
+
+/** 指尖绘形：食指单指在空中画，笔画凝固成粒子形状 */
+export const DRAW = {
+  sampleDist: 7,        // 相邻采样点的最小间距（像素）
+  maxPoints: 400,       // 一笔最多记录多少点
+  minLength: 70,        // 太短的一笔直接丢掉（误触）
+  minPoints: 8,
+  closeRatio: 0.24,     // 首尾距离 / 笔画长度 小于此值 → 认为闭合
+  matchError: 0.165,    // 形状匹配的平均误差上限（归一化空间）
+  perShape: 380,        // 每一笔的粒子数
+  sheetGap: 6,          // 秒：离上一次落笔多久内算"同一张纸"（写字要能叠笔画）
+  maxSheets: 3,         // 同时最多几张"纸"
+  sheetParts: 4200,     // 单张纸的粒子上限，超了自动换新纸
+  morphTime: 0.7,       // 聚拢成形的时长（秒）
+  life: 20,             // 停笔后保留秒数，最后 3 秒淡出
 };
 
 /** 星系基础运动：差速旋转，中心快、外围慢 */

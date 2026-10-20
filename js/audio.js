@@ -90,7 +90,7 @@ export function initAudio() {
     const nd = noiseBuf.getChannelData(0);
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
 
-    master.gain.exponentialRampToValueAtTime(0.85, ac.currentTime + 4);
+    master.gain.exponentialRampToValueAtTime(muted ? 0.00008 : 0.85, ac.currentTime + 4);
   } catch (e) {
     console.warn('音频初始化失败，静音运行', e);
     ac = null;
@@ -108,6 +108,12 @@ export function toggleMute() {
   if (master && ac) {
     master.gain.setTargetAtTime(muted ? 0.00008 : 0.85, ac.currentTime, 0.2);
   }
+  return muted;
+}
+
+/** 幂等地设置静音状态（面板复选框 / 右上角按钮共用同一份状态） */
+export function setMuted(v) {
+  if (!!v !== muted) toggleMute();
   return muted;
 }
 
@@ -185,6 +191,16 @@ export const sfx = {
     if (!ac || muted) return;
     const t0 = ac.currentTime;
     toneHit(t0, 0.62, 440, 88, 0.068);
+  },
+
+  /** 指尖绘形成形：三声轻铃 + 一点沙响 */
+  shape() {
+    if (!ac || muted) return;
+    const t0 = ac.currentTime;
+    [1046.5, 1318.5, 1568].forEach((f, i) => {
+      toneHit(t0 + i * 0.055, 1.15, f * 1.5, f, 0.045);
+    });
+    noiseHit(t0, 0.42, 'bandpass', 2400, 6200, 0.045, 2.2);
   },
 };
 

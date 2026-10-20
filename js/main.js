@@ -11,7 +11,7 @@ import {
   startBtn, demoBtn, muteBtn,
   ctx, video, veil,
   setStatus, setStatusOnce, toast, setHint, setHintHTML, hideVeil,
-  setStartBtn, setPreview, showMuteBtn, setMuteIcon, paintPerf,
+  setStartBtn, setPreview, showMuteBtn, showTuneBtn, setMuteIcon, paintPerf,
 } from './ui.js';
 import { resizeCanvas } from './viewport.js';
 import { P, initParticles, remap, updateParticles, drawStars, drawNebula } from './particles.js';
@@ -22,6 +22,9 @@ import {
 } from './effects.js';
 import { initAudio, resumeAudio, toggleMute, isMuted, setupMic, pollMic, hasMic } from './audio.js';
 import { loadEngine, makeMapper } from './engine.js';
+import { updateDraw, drawShapes, playDemoShape } from './draw.js';
+import { load as loadSettings, applySettings } from './settings.js';
+import { buildPanel, sync as syncPanel } from './panel.js';
 
 let landmarker = null;
 let lastVideoTime = -1;
@@ -30,6 +33,7 @@ let fpsAcc = 0;
 let fpsFrames = 0;
 let lastPerfPaint = 0;
 let demoSnapped = false;
+let demoDrew = false;
 
 /* ---------------------- 主循环 ---------------------- */
 
@@ -78,11 +82,19 @@ function loop(now) {
       snapBlast(cx, cy);
     }
     if (cyc < 0.78) demoSnapped = false;
+
+    // 演示一次"指尖画心"：走的是和真实手势完全相同的成形管线
+    if (cyc >= 0.44 && cyc < 0.66 && !demoDrew) {
+      demoDrew = true;
+      playDemoShape(cx, cy - 30 * s, 120 * s);
+    }
+    if (cyc < 0.44 || cyc >= 0.66) demoDrew = false;
   }
 
   // --- 逻辑 ---
   updateHands(dt);
   consumeHandEvents(hands);      // 手势事件 → 音效 / 爆发
+  updateDraw(dt, hands);         // 指尖绘形：记录笔画 → 收笔 → 粒子成形
   updateParticles(dt, hands);
   emitSparks(dt, hands);
   updateSparks(dt);
@@ -119,6 +131,7 @@ function draw(t) {
 
   drawStars(t);
   drawNebula();
+  drawShapes(t);
   drawSparks();
   drawBursts();
   for (const h of hands) drawHand(h, t);
@@ -135,6 +148,7 @@ async function startLive() {
 
   initAudio();
   showMuteBtn(true);
+  showTuneBtn(true);
   setMuteIcon(isMuted());
 
   try {
@@ -179,6 +193,7 @@ async function startLive() {
 function startDemo() {
   initAudio();
   showMuteBtn(true);
+  showTuneBtn(true);
   setMuteIcon(isMuted());
   S.setMode('demo');
   hideVeil();
@@ -195,6 +210,7 @@ demoBtn.addEventListener('click', startDemo);
 muteBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   setMuteIcon(toggleMute());
+  syncPanel();            // 面板里的「音效」开关跟着变
 });
 
 // 浏览器要求音频必须由用户手势唤醒
@@ -216,6 +232,12 @@ window.addEventListener('orientationchange', () => {
 
 resizeCanvas();
 initParticles();
+
+// 读取上次保存的主题与参数，再建面板（面板的初始值从 settings 读）
+loadSettings();
+applySettings();
+buildPanel();
+
 requestAnimationFrame(loop);
 
 // 兼容 file:// 直接打开：摄像头会被浏览器拦截，提前说明

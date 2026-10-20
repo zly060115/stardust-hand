@@ -5,7 +5,7 @@
  * 播放对应音效、并在画面上画出光环与火星。
  */
 
-import { THEME, BURST, SNAP, SPARK } from './config.js';
+import { THEME, BURST, SNAP, SPARK, FX } from './config.js';
 import { clock } from './state.js';
 import { P, TIPS, rand } from './particles.js';
 import { sprites, hueIndex } from './render.js';
@@ -61,6 +61,7 @@ const sparks = [];
 
 /** 每个指尖沿手指方向持续迸出火星，张开度越高越密集 */
 export function emitSparks(dt, hands) {
+  if (!FX.sparks) return;
   for (const h of hands) {
     if (!h.pts || h.visible < 0.05) continue;
 
@@ -90,7 +91,7 @@ export function emitSparks(dt, hands) {
           life: 1,
           dec: rand(SPARK.decayMin, SPARK.decayMax),
           size: rand(1.1, 2.7),
-          hue: h.strength > 1.2 ? THEME.warmHue : 44,   // 握拳时火星偏暖
+          hue: h.strength > 1.2 ? THEME.warmHue : THEME.handHue,   // 握拳时火星偏暖
         });
       }
     }
