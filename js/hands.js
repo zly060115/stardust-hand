@@ -15,7 +15,7 @@
  */
 
 import { THEME, GESTURE, FIELD, FX, D3 } from './config.js';
-import { clock, mode, drawingNow, strokeEndClock } from './state.js';
+import { clock, mode, drawingNow, strokeEndClock, W, H } from './state.js';
 import { ctx } from './ui.js';
 import { pushSample, makeSample, detectSnap } from './snap.js';
 
@@ -137,15 +137,12 @@ export function feed(ptsList) {
     const midRatio = dist(pts[4], pts[12]) / palmW;
     h.midRatio = midRatio;
 
-    // --- 3D 视角：用手掌朝向推测"手在往哪转、离镜头多远" ---
-    // 中指根相对手腕的方向就是掌面的指向；再除一次掌宽，远近就不会被距离干扰。
-    const hx = (mid.x - wrist.x) / palmW;
-    const hy = (mid.y - wrist.y) / palmW;
-    h.poseYaw = Math.max(-1, Math.min(1, hx * 0.85));
-    h.posePitch = Math.max(-1, Math.min(1, hy * 0.85));
-    // 侧倾：食指根 - 小指根 的水平分量，张开手时最能体现手转了多大角度
-    h.poseRoll = Math.max(-1, Math.min(1, (pts[5].x - pts[17].x) / palmW * 0.55));
-    // 手掌在画面里的尺寸 ≈ 离镜头有多近（基准是"正常距离"下的掌宽）
+    // --- 3D 视角：手的位置当"取景器" ---
+    // 掌心在画面哪边，视角就往哪边转（手往左移 = 想看左边的星空）；
+    // 手掌越大 = 离镜头越近 = 星空扑面而来。
+    // 不用掌面朝向了：腕部角度随手势乱变，视角会一直漂。
+    h.poseYaw = Math.max(-1, Math.min(1, (px - W / 2) / (W * 0.42)));
+    h.posePitch = Math.max(-1, Math.min(1, (py - H / 2) / (H * 0.42)));
     h.poseDist = Math.max(0.55, Math.min(1.9, palmW / D3.palmRef));
 
     // 刚刚打过响指的话，这一小段里的食指动作是"弹指"的余波，不该起笔
@@ -222,7 +219,7 @@ export function updateHands(dt) {
   }
 }
 
-/** 画一只手的星尘轮廓与掌心光晕 */
+/** 画一只拟人化的发光手：掌面有体量、手指有血肉宽度 */
 export function drawHand(h, t) {
   const v = h.visible;
   if (v < 0.02 || !h.pts) return;
@@ -230,6 +227,10 @@ export function drawHand(h, t) {
   const warm = h.strength > 1.2;     // 握拳时偏暖橙
   const hue = warm ? THEME.warmHue : THEME.handHue;
   const pulse = 0.5 + 0.5 * Math.sin(t * (warm ? 6.5 : 2.4));
+  const pts = h.pts;
+
+  // 尺寸归一：手离镜头远近不同，所有宽度跟着 h.scale 缩放
+  const K = Math.max(0.45, Math.min(2.2, h.scale / 150));
 
   // 掌心光晕（这个始终保留：没有它手就"不在场"了）
   const rad = h.scale * (0.95 + h.spread * 0.9) * (0.92 + pulse * 0.12);
@@ -250,49 +251,95 @@ export function drawHand(h, t) {
     return;
   }
 
-  const pts = h.pts;
-
-  /**
-   * 沿一条链画平滑曲线（二次贝塞尔：以相邻关键点的中点为锚，
-   * 关键点本身当控制点——既圆润又不会飘出关节太远）。
-   */
-  const trace = chain => {
-    const p = chain.pts;
-    ctx.moveTo(pts[p[0]].x, pts[p[0]].y);
-    if (p.length === 2) {
-      ctx.lineTo(pts[p[1]].x, pts[p[1]].y);
-      return;
-    }
-    for (let i = 1; i < p.length - 1; i++) {
-      const a = pts[p[i]];
-      const b = pts[p[i + 1]];
-      ctx.quadraticCurveTo(a.x, a.y, (a.x + b.x) / 2, (a.y + b.y) / 2);
-    }
-    const last = pts[p[p.length - 1]];
-    ctx.lineTo(last.x, last.y);
-  };
-
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.globalAlpha = 1;
 
-  // ① 手指外辉光：粗、淡，像光从指根漫出来
-  for (const c of CHAINS.slice(0, 5)) {
-    ctx.strokeStyle = `hsla(${hue},100%,74%,${0.16 * v})`;
-    ctx.lineWidth = 5.2;
+  /* ---------- ① 掌面填充：给手掌"体积"，不是一圈硬轮廓 ---------- */
+  {
+    const rim = [0, 1, 5, 9, 13, 17];               // 腕 → 拇指根 → 四指根 → 小指根
     ctx.beginPath();
-    trace(c);
-    ctx.stroke();
+    ctx.moveTo((pts[rim[0]].x + pts[rim[1]].x) / 2, (pts[rim[0]].y + pts[rim[1]].y) / 2);
+    for (let i = 1; i < rim.length; i++) {
+      const a = pts[rim[i]];
+      const b = pts[rim[(i + 1) % rim.length]];
+      ctx.quadraticCurveTo(a.x, a.y, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    }
+    ctx.closePath();
+    const pg = ctx.createRadialGradient(h.x, h.y, h.scale * 0.1, h.x, h.y, h.scale * 1.15);
+    pg.addColorStop(0, `hsla(${hue},100%,76%,${0.13 * v})`);
+    pg.addColorStop(0.75, `hsla(${hue},100%,66%,${0.07 * v})`);
+    pg.addColorStop(1, `hsla(${hue},100%,62%,0)`);
+    ctx.fillStyle = pg;
+    ctx.fill();
   }
 
-  // ② 手指内芯：从掌根到指尖渐细，像光顺着指尖流出去
+  /* ---------- ② 手指：有宽度的锥形"光肉"，指根埋进掌面 ---------- */
+  const fingerBody = c => {
+    const p = c.pts;
+    const n = p.length;
+    // 每个关节的半宽：指根最宽 → 指尖收窄，最后一段还要为圆头留余量
+    const half = i => (11 - 5.5 * (i / (n - 1))) * K * 0.5;
+
+    // 起点向掌心延伸一段，手指"长在掌里"，不会和掌面之间出现接缝
+    const root = pts[p[0]];
+    const dxp = h.x - root.x;
+    const dyp = h.y - root.y;
+    const dl = Math.hypot(dxp, dyp) || 1;
+    const ext = { x: root.x + dxp / dl * h.scale * 0.16, y: root.y + dyp / dl * h.scale * 0.16 };
+
+    // 算每段的法线（第 0 段用延伸起点）
+    const px = [ext.x, ...p.slice(1).map(i => pts[i].x)];
+    const py = [ext.y, ...p.slice(1).map(i => pts[i].y)];
+    const nx = [], ny = [];
+    for (let i = 0; i < n - 1; i++) {
+      const dx = px[i + 1] - px[i];
+      const dy = py[i + 1] - py[i];
+      const l = Math.hypot(dx, dy) || 1;
+      nx.push(-dy / l);
+      ny.push(dx / l);
+    }
+
+    ctx.beginPath();
+    // 左轮廓：掌内 → 指尖
+    for (let i = 0; i < n - 1; i++) {
+      const hw = (half(i) + half(i + 1)) / 2;
+      const x = px[i] + nx[i] * hw;
+      const y = py[i] + ny[i] * hw;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    // 指尖圆头
+    const tipP = { x: px[n - 1], y: py[n - 1] };
+    ctx.arc(tipP.x, tipP.y, half(n - 1) * 1.15, 0, Math.PI * 2);
+    // 右轮廓：指尖 → 掌内
+    for (let i = n - 2; i >= 0; i--) {
+      const hw = (half(i) + half(i + 1)) / 2;
+      ctx.lineTo(px[i] - nx[i] * hw, py[i] - ny[i] * hw);
+    }
+    ctx.closePath();
+
+    // 填充：掌内较亮 → 指尖稍暗，像光从掌心灌进手指
+    const fg = ctx.createLinearGradient(ext.x, ext.y, tipP.x, tipP.y);
+    fg.addColorStop(0, `hsla(${hue},100%,70%,${0.17 * v})`);
+    fg.addColorStop(0.55, `hsla(${hue},100%,76%,${0.15 * v})`);
+    fg.addColorStop(1, `hsla(${hue},100%,84%,${0.11 * v})`);
+    ctx.fillStyle = fg;
+    ctx.fill();
+
+    // 一道极淡的边缘光，让"肉"有轮廓而不发闷
+    ctx.strokeStyle = `hsla(${hue},100%,88%,${0.09 * v})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  };
+
+  for (const c of CHAINS.slice(0, 5)) fingerBody(c);
+
+  // 中轴亮线：藏在"肉"里的骨头，从掌根亮到指尖
   for (const c of CHAINS.slice(0, 5)) {
     const p = c.pts;
     for (let i = 0; i < p.length - 1; i++) {
-      const k = i / (p.length - 2);                 // 0 掌根 → 1 指尖
-      const w = 2.8 * (1 - k) + 1.1 * k;
-      ctx.strokeStyle = `hsla(${hue},100%,${84 + k * 8}%,${(0.52 - k * 0.12) * v})`;
-      ctx.lineWidth = w;
+      const k = i / (p.length - 2);
+      ctx.strokeStyle = `hsla(${hue},100%,${86 + k * 8}%,${(0.46 - k * 0.10) * v})`;
+      ctx.lineWidth = (1.7 * (1 - k) + 0.7 * k) * K;
       ctx.beginPath();
       ctx.moveTo(pts[p[i]].x, pts[p[i]].y);
       if (i === p.length - 2) {
@@ -306,11 +353,11 @@ export function drawHand(h, t) {
     }
   }
 
-  // ③ 指尖光斑：只有指尖有"星"，关节不再是医疗探针上的一排铆钉
+  /* ---------- ③ 指尖光斑 ---------- */
   ctx.globalCompositeOperation = 'lighter';
   for (let f = 0; f < TIP_IDS.length; f++) {
     const tip = pts[TIP_IDS[f]];
-    const r = (3.2 + pulse * 1.4) * (1 - f * 0.06);
+    const r = (3.2 + pulse * 1.4) * K * (1 - f * 0.06);
     const gg = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, r * 3);
     gg.addColorStop(0, `hsla(${hue},100%,95%,${0.85 * v})`);
     gg.addColorStop(0.4, `hsla(${hue},100%,80%,${0.30 * v})`);
@@ -322,10 +369,10 @@ export function drawHand(h, t) {
   }
   ctx.globalCompositeOperation = 'source-over';
 
-  // ④ 食指尖如果是"笔尖"（正在写字），多给一颗亮星提示
+  /* ---------- ④ 写字中的食指尖 = 笔尖，多给一颗亮星 ---------- */
   if (h.drawing) {
     const tip = pts[8];
-    const r = 5 + pulse * 2.5;
+    const r = (5 + pulse * 2.5) * K;
     const gg = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, r * 3.4);
     gg.addColorStop(0, `hsla(${THEME.handHue},100%,98%,${0.95 * v})`);
     gg.addColorStop(0.35, `hsla(${THEME.handHue},100%,86%,${0.45 * v})`);

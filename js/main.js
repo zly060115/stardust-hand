@@ -139,8 +139,9 @@ function updateView(dt, t) {
   let wsum = 0;
 
   for (const h of hands) {
-    // 正在写字的那只手也在驱动视角，但权重压到最低：字才不会跟着晃
-    const w = h.visible * (h.drawing ? 0.25 : 1);
+    // 正在写字 / 持笔姿势的手不参与视角：字不能跟着手的位置漂
+    if (h.drawing || h.drawRaw) continue;
+    const w = h.visible;
     if (w < 0.02) continue;
     yaw += h.poseYaw * w;
     pitch += h.posePitch * w;
