@@ -44,6 +44,7 @@ const GROUPS = [
 const TOGGLES = [
   { key: 'depth3d', label: '3D 星河', hint: '星空有真实厚度，手一转视角跟着变；关掉回到平面' },
   { key: 'draw', label: '指尖绘形', hint: '食指单指在空中画，粒子接住形状' },
+  { key: 'planets', label: '太阳系天体', hint: '银河里散布地球、月球、土星等；手移过去就能照亮它、看到名字' },
   { key: 'autoShape', label: '自动成型', hint: '闭合笔画会被认成心形 / 圆形 / 星形' },
   { key: 'sparks', label: '指尖火星', hint: '张手时指尖迸出火花' },
   { key: 'skeleton', label: '手掌骨架', hint: '关掉只留掌心光晕' },

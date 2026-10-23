@@ -47,6 +47,7 @@ export const FX = {
   stars: true,      // 背景远景星
   draw: true,       // 指尖绘形
   autoShape: true,  // 画闭合图形时自动规整成标准形状
+  planets: true,    // 太阳系天体（地球 / 月球 / 土星…，手势转动视角去寻找）
 };
 
 /**

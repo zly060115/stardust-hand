@@ -26,6 +26,7 @@ import { updateDraw, drawShapes, playDemoShape } from './draw.js';
 import { updateCamera, gesturePose, dragBy, resetView } from './tilt.js';
 import { load as loadSettings, applySettings } from './settings.js';
 import { buildPanel, sync as syncPanel } from './panel.js';
+import { setCanvas, updatePlanets, drawPlanets, drawOrbits } from './planets.js';
 
 let landmarker = null;
 let lastVideoTime = -1;
@@ -95,6 +96,7 @@ function loop(now) {
   // --- 逻辑 ---
   updateHands(dt);
   updateView(dt, t);             // 手 / 拖拽 / 自动漂移 → 相机姿态
+  updatePlanets(t);              // 天体投影 + 手掌悬停检测
   consumeHandEvents(hands);      // 手势事件 → 音效 / 爆发
   updateDraw(dt, hands);         // 指尖绘形：记录笔画 → 收笔 → 粒子成形
   updateParticles(dt, hands);
@@ -169,9 +171,15 @@ function draw(t) {
 
   ctx.globalCompositeOperation = 'lighter';
 
+  // 天体是"实体"：用正常合成画，之后星云光尘再以 lighter 叠上去
   drawStars(t);
+  ctx.globalCompositeOperation = 'source-over';
+  drawPlanets(t);                // 远处的天体先画（会被星云光尘部分遮挡）
+  ctx.globalCompositeOperation = 'lighter';
   drawNebula();
-  drawShapes(t);
+  ctx.globalCompositeOperation = 'source-over';
+  drawOrbits();
+  ctx.globalCompositeOperation = 'lighter';
   drawSparks();
   drawBursts();
   for (const h of hands) drawHand(h, t);
@@ -313,6 +321,7 @@ window.addEventListener('orientationchange', () => {
 
 resizeCanvas();
 initParticles();
+setCanvas(ctx);                  // 天体模块要往同一块画布上画
 
 // 读取上次保存的主题与参数，再建面板（面板的初始值从 settings 读）
 loadSettings();

@@ -98,7 +98,7 @@ const DEFAULTS = {
   omega: 0.30,
   power: 1,
   depth3d: 1,          // 3D 景深倍率：改的是星系盘厚度，视觉上"星星前后拉得开不开"
-  fx: { sparks: true, skeleton: true, stars: true, sound: true, draw: true, autoShape: true, depth3d: true },
+  fx: { sparks: true, skeleton: true, stars: true, sound: true, draw: true, autoShape: true, depth3d: true, planets: true },
 };
 
 /** 当前设置（面板读写的就是这个对象） */
@@ -152,6 +152,7 @@ export function applySettings() {
   FX.skeleton = !!settings.fx.skeleton;
   FX.stars = !!settings.fx.stars;
   FX.draw = !!settings.fx.draw;
+  FX.planets = settings.fx.planets !== false;
   FX.autoShape = !!settings.fx.autoShape;
   FX.depth3d = !!settings.fx.depth3d;
   D3.enabled = FX.depth3d;
