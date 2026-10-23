@@ -29,14 +29,20 @@ const RANGES = {
   swirl: { label: '旋涡强度', min: 0.2, max: 2.4, step: 0.05, fmt: v => v.toFixed(2) },
   omega: { label: '星系转速', min: 0.05, max: 0.7, step: 0.01, fmt: v => v.toFixed(2) },
   power: { label: '爆发强度', min: 0.4, max: 2, step: 0.05, fmt: v => '×' + v.toFixed(2) },
+  depth3d: {
+    label: '3D 景深', min: 0.15, max: 1.6, step: 0.05,
+    fmt: v => '×' + v.toFixed(2),
+  },
 };
 
 const GROUPS = [
   { title: '外观', items: ['density', 'trail', 'starBright'] },
   { title: '手感', items: ['pull', 'swirl', 'omega', 'power'] },
+  { title: '空间', items: ['depth3d'] },
 ];
 
 const TOGGLES = [
+  { key: 'depth3d', label: '3D 星河', hint: '星空有真实厚度，手一转视角跟着变；关掉回到平面' },
   { key: 'draw', label: '指尖绘形', hint: '食指单指在空中画，粒子接住形状' },
   { key: 'autoShape', label: '自动成型', hint: '闭合笔画会被认成心形 / 圆形 / 星形' },
   { key: 'sparks', label: '指尖火星', hint: '张手时指尖迸出火花' },

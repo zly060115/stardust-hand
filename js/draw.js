@@ -11,12 +11,13 @@
  * 不会被硬套成一个图形。
  */
 
-import { THEME, FX, DRAW } from './config.js';
+import { THEME, FX, DRAW, D3 } from './config.js';
 import { clock, setDrawingNow, markStrokeEnd } from './state.js';
 import { sprites, hueIndex } from './render.js';
 import { ctx } from './ui.js';
 import { sfx } from './audio.js';
 import { analyzeStroke, pathLength, resample, placeTemplate } from './shape.js';
+import { prepare, proj } from './tilt.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -148,6 +149,10 @@ function spawnShape(from, target, name) {
     parts.push({
       x: s.x + rand(-16, 16),
       y: s.y + rand(-16, 16),
+      // 目标点在 3D 空间里也带一点前后错落，字形不再是贴纸，而是"悬浮的字"
+      z: 0,
+      tz: D3.enabled ? rand(-1, 1) * 130 : 0,
+      vz: 0,
       tx: tgt[i].x,
       ty: tgt[i].y,
       vx: rand(-0.6, 0.6),
@@ -194,6 +199,14 @@ function updateSheets(dt) {
       p.vy *= damp;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+
+      if (D3.enabled) {
+        p.vz += (p.tz - p.z) * k * dt;
+        p.vz *= damp;
+        p.z += p.vz * dt;
+        // 字会像挂着的星尘一样极缓慢地起伏
+        p.tz += Math.sin(clock * 0.4 + p.ph) * 0.06 * dt;
+      }
     }
 
     if (age > DRAW.life) sheets.splice(i, 1);
@@ -283,6 +296,10 @@ function drawLive(t) {
 export function drawShapes(t) {
   drawLive(t);
 
+  const use3d = D3.enabled;
+  if (use3d) prepare();
+  const o = { x: 0, y: 0, k: 1, ok: true };
+
   for (const sh of sheets) {
     const age = clock - sh.touched;
     const fadeIn = Math.min(1, age * 3.2);
@@ -292,9 +309,19 @@ export function drawShapes(t) {
     for (const p of sh.parts) {
       // 每个粒子自己的呼吸，整体才不像一条死线
       const breathe = 0.62 + 0.38 * Math.sin(t * p.sp + p.ph);
-      const r = p.size * 5.4 * (0.9 + breathe * 0.2);
+
+      if (!use3d) {
+        const r = p.size * 5.4 * (0.9 + breathe * 0.2);
+        ctx.globalAlpha = alpha * breathe * 0.9;
+        ctx.drawImage(sprites[hueIndex(p.hue)], p.x - r, p.y - r, r * 2, r * 2);
+        continue;
+      }
+
+      proj(p.x, p.y, p.z, o);
+      if (!o.ok) continue;
+      const r = p.size * 5.4 * o.k * (0.9 + breathe * 0.2);
       ctx.globalAlpha = alpha * breathe * 0.9;
-      ctx.drawImage(sprites[hueIndex(p.hue)], p.x - r, p.y - r, r * 2, r * 2);
+      ctx.drawImage(sprites[hueIndex(p.hue)], o.x - r, o.y - r, r * 2, r * 2);
     }
   }
   ctx.globalAlpha = 1;

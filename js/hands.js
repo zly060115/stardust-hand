@@ -14,7 +14,7 @@
  * 判定逻辑单独放在 snap.js（纯函数、可测试），这里只负责喂样本和加互斥锁。
  */
 
-import { THEME, GESTURE, FIELD, FX } from './config.js';
+import { THEME, GESTURE, FIELD, FX, D3 } from './config.js';
 import { clock, mode, drawingNow, strokeEndClock } from './state.js';
 import { ctx } from './ui.js';
 import { pushSample, makeSample, detectSnap } from './snap.js';
@@ -54,6 +54,12 @@ export function newHand() {
     midRatio: 1,                    // 拇指-中指 标度距离（当帧）
     drawW: 0,                       // 平滑后的绘形意向 0~1
     drawing: false,                 // 稳定判定结果（防抖）
+
+    // 3D 视角：由手掌朝向推测（-1~1），poseDist 是相对的远近
+    poseYaw: 0,
+    posePitch: 0,
+    poseRoll: 0,
+    poseDist: 1,
 
     evPinch: null,
     evSnap: null,
@@ -113,6 +119,17 @@ export function feed(ptsList) {
     // 拇指-中指距离：响指的动作就是这一对"合上 → 弹开"
     const midRatio = dist(pts[4], pts[12]) / palmW;
     h.midRatio = midRatio;
+
+    // --- 3D 视角：用手掌朝向推测"手在往哪转、离镜头多远" ---
+    // 中指根相对手腕的方向就是掌面的指向；再除一次掌宽，远近就不会被距离干扰。
+    const hx = (mid.x - wrist.x) / palmW;
+    const hy = (mid.y - wrist.y) / palmW;
+    h.poseYaw = Math.max(-1, Math.min(1, hx * 0.85));
+    h.posePitch = Math.max(-1, Math.min(1, hy * 0.85));
+    // 侧倾：食指根 - 小指根 的水平分量，张开手时最能体现手转了多大角度
+    h.poseRoll = Math.max(-1, Math.min(1, (pts[5].x - pts[17].x) / palmW * 0.55));
+    // 手掌在画面里的尺寸 ≈ 离镜头有多近（基准是"正常距离"下的掌宽）
+    h.poseDist = Math.max(0.55, Math.min(1.9, palmW / D3.palmRef));
 
     // 刚刚打过响指的话，这一小段里的食指动作是"弹指"的余波，不该起笔
     h.drawLock = clock - h.snapAt < GESTURE.snapDrawLock;

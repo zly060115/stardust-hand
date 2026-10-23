@@ -5,7 +5,7 @@
  * 播放对应音效、并在画面上画出光环与火星。
  */
 
-import { THEME, BURST, SNAP, SPARK, FX } from './config.js';
+import { THEME, BURST, SNAP, SPARK, FX, D3 } from './config.js';
 import { clock } from './state.js';
 import { P, TIPS, rand } from './particles.js';
 import { sprites, hueIndex } from './render.js';
@@ -23,11 +23,14 @@ export function burst(x, y) {
   for (const p of P) {
     const dx = p.x - x;
     const dy = p.y - y;
-    const d = Math.hypot(dx, dy) + 1;
+    const dz = D3.enabled ? p.z : 0;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1;
     if (d > BURST.radius) continue;
     const k = Math.pow(1 - d / BURST.radius, BURST.falloff) * BURST.power;
     p.vx += dx / d * k;
     p.vy += dy / d * k;
+    // 冲击是球面的：z 上也要炸开，不然只看到一圈平面涟漪
+    if (D3.enabled) p.vz += (dz / d * k) * 0.8 + rand(-0.6, 0.6) * k * 0.03;
     p.boost = Math.max(p.boost, BURST.boost);
   }
 
@@ -44,10 +47,13 @@ export function snapBlast(x, y) {
   for (const p of P) {
     const dx = p.x - x;
     const dy = p.y - y;
-    const d = Math.hypot(dx, dy) + 1;
+    const dz = D3.enabled ? p.z : 0;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1;
     const k = SNAP.power + SNAP.powerK / (d + SNAP.powerR);
     p.vx += dx / d * k;
     p.vy += dy / d * k;
+    // z 方向的散开幅度刻意放大：整个星空会"厚"起来，比纯 2D 震撼得多
+    if (D3.enabled) p.vz += dz / d * k * 1.7 + rand(-1, 1) * k * 0.22;
     p.boost = 1;
   }
 

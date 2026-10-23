@@ -11,7 +11,7 @@
  *   2. 主题变化要按半径重新上色（refreshHues），否则老粒子会停在旧配色
  */
 
-import { THEME, SCALE, FIELD, GALAXY, BURST, SNAP, FX } from './config.js';
+import { THEME, SCALE, FIELD, GALAXY, BURST, SNAP, FX, D3 } from './config.js';
 import { P, refreshHues, setDensity } from './particles.js';
 import { paintBg } from './viewport.js';
 import { isMuted, setMuted } from './audio.js';
@@ -83,7 +83,7 @@ const rgbStr = ([r, g, b], a) =>
 /* ---------------------- 状态 ---------------------- */
 
 /** 爆发冲量的基准值：滑块是倍率，不要直接改 config 里的原始值 */
-const BASE = { burst: BURST.power, snap: SNAP.power };
+const BASE = { burst: BURST.power, snap: SNAP.power, depth: D3.depth };
 
 const KEY = 'stardust:settings:v1';
 
@@ -97,7 +97,8 @@ const DEFAULTS = {
   swirl: 1.05,
   omega: 0.30,
   power: 1,
-  fx: { sparks: true, skeleton: true, stars: true, sound: true, draw: true, autoShape: true },
+  depth3d: 1,          // 3D 景深倍率：改的是星系盘厚度，视觉上"星星前后拉得开不开"
+  fx: { sparks: true, skeleton: true, stars: true, sound: true, draw: true, autoShape: true, depth3d: true },
 };
 
 /** 当前设置（面板读写的就是这个对象） */
@@ -152,6 +153,9 @@ export function applySettings() {
   FX.stars = !!settings.fx.stars;
   FX.draw = !!settings.fx.draw;
   FX.autoShape = !!settings.fx.autoShape;
+  FX.depth3d = !!settings.fx.depth3d;
+  D3.enabled = FX.depth3d;
+  D3.depth = BASE.depth * (settings.depth3d || 1);
 
   // 密度：先写 config，再让粒子数组对齐
   const want = settings.density > 0 ? Math.round(settings.density) : 0;

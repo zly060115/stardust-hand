@@ -5,7 +5,7 @@
  * 想了解数据怎么流动，从这个文件开始读：输入（摄像头/演示） → 手势 → 物理 → 绘制。
  */
 
-import { THEME, PERF } from './config.js';
+import { THEME, PERF, D3 } from './config.js';
 import * as S from './state.js';
 import {
   startBtn, demoBtn, muteBtn,
@@ -23,6 +23,7 @@ import {
 import { initAudio, resumeAudio, toggleMute, isMuted, setupMic, pollMic, hasMic } from './audio.js';
 import { loadEngine, makeMapper } from './engine.js';
 import { updateDraw, drawShapes, playDemoShape } from './draw.js';
+import { updateCamera, gesturePose, dragBy, resetView } from './tilt.js';
 import { load as loadSettings, applySettings } from './settings.js';
 import { buildPanel, sync as syncPanel } from './panel.js';
 
@@ -93,6 +94,7 @@ function loop(now) {
 
   // --- 逻辑 ---
   updateHands(dt);
+  updateView(dt, t);             // 手 / 拖拽 / 自动漂移 → 相机姿态
   consumeHandEvents(hands);      // 手势事件 → 音效 / 爆发
   updateDraw(dt, hands);         // 指尖绘形：记录笔画 → 收笔 → 粒子成形
   updateParticles(dt, hands);
@@ -118,6 +120,43 @@ function loop(now) {
   }
 
   requestAnimationFrame(loop);
+}
+
+/**
+ * 相机姿态：由手带动。
+ *
+ * 用手掌朝向当"操纵杆"——手往左倾，星空从左边看过去；手推近镜头，星空扑面而来。
+ * 写字时手在动，但那只手是在规则地"扫"，掌面朝向变化很慢，
+ * 所以这里不做特殊屏蔽，只靠平滑把写字的抖动滤掉。
+ */
+function updateView(dt, t) {
+  if (!D3.enabled) return;
+
+  let yaw = 0;
+  let pitch = 0;
+  let roll = 0;
+  let dist = 0;
+  let wsum = 0;
+
+  for (const h of hands) {
+    // 正在写字的那只手也在驱动视角，但权重压到最低：字才不会跟着晃
+    const w = h.visible * (h.drawing ? 0.25 : 1);
+    if (w < 0.02) continue;
+    yaw += h.poseYaw * w;
+    pitch += h.posePitch * w;
+    roll += h.poseRoll * w;
+    dist += h.poseDist * w;
+    wsum += w;
+  }
+
+  if (wsum > 0.001) {
+    gesturePose(yaw / wsum, pitch / wsum, roll / wsum, dist / wsum, 1);
+  } else {
+    // 没有手：让相机回到正对屏幕，只留自动漂移
+    gesturePose(0, 0, 0, 1, 0);
+  }
+
+  updateCamera(dt, t);
 }
 
 /** 一帧的画面：先铺半透明底色留拖尾，再用 lighter 叠加所有发光体 */
@@ -216,6 +255,47 @@ muteBtn.addEventListener('click', (e) => {
 // 浏览器要求音频必须由用户手势唤醒
 document.addEventListener('pointerdown', resumeAudio, { passive: true });
 
+/* ---------------------- 视角拖拽 ---------------------- */
+
+/**
+ * 鼠标 / 手指拖拽转视角。
+ * 手机上来不及"抬手再滑"，所以拖拽不做手势识别，纯粹是相机的额外操控。
+ * 拖完松手，偏移会自己衰减回正——不会出现"转过去回不来"的情况。
+ */
+function bindDrag(canvasEl) {
+  let active = false;
+  let lx = 0;
+  let ly = 0;
+
+  canvasEl.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.panel, button, .btn')) return;   // 别拦面板上的点击
+    active = true;
+    lx = e.clientX;
+    ly = e.clientY;
+    canvasEl.setPointerCapture?.(e.pointerId);
+  });
+
+  canvasEl.addEventListener('pointermove', (e) => {
+    if (!active || !D3.enabled) return;
+    const k = 1 / Math.max(400, Math.min(S.W, S.H));
+    dragBy((e.clientX - lx) * k * 2.2, (e.clientY - ly) * k * 1.6);
+    lx = e.clientX;
+    ly = e.clientY;
+  });
+
+  const end = () => { active = false; };
+  canvasEl.addEventListener('pointerup', end);
+  canvasEl.addEventListener('pointercancel', end);
+  canvasEl.addEventListener('pointerleave', end);
+
+  // 双击复位
+  canvasEl.addEventListener('dblclick', () => {
+    resetView();
+    toast('视角已复位');
+  });
+}
+
+bindDrag(document.getElementById('sky') || document.querySelector('canvas'));
 window.addEventListener('resize', () => {
   const { prevW, prevH } = resizeCanvas();
   remap(prevW, prevH);

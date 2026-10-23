@@ -2,7 +2,8 @@
  * render.js —— 光点画笔
  *
  * 每个粒子如果都用径向渐变画，2000 个粒子会直接拖垮帧率。
- * 这里预生成 52 张不同色相的 64×64 光斑贴图，绘制时只做 drawImage + globalAlpha。
+ * 这里预生成一组不同色相的 64×64 光斑贴图，绘制时只做 drawImage + globalAlpha。
+ * 另外再生成一套虚化版（spritesBlur），供 3D 景深用。
  */
 
 import { SPRITE } from './config.js';
@@ -35,3 +36,27 @@ export function hueIndex(hue) {
   const i = Math.round((hue - SPRITE.hueMin) / SPRITE.hueStep);
   return i < 0 ? 0 : (i >= SPRITE.steps ? SPRITE.steps - 1 : i);
 }
+
+/**
+ * 虚化版光斑：3D 里远处的粒子用它画，模拟景深。
+ * 做法是把原贴图缩小再放大回去——浏览器会做双线性插值，
+ * 一次性生成完当缓存用，比每帧带 filter 便宜得多。
+ */
+function makeBlurred(src, factor) {
+  const s = SPRITE.size;
+  const small = document.createElement('canvas');
+  small.width = small.height = Math.max(4, Math.round(s * factor));
+  const sg = small.getContext('2d');
+  sg.imageSmoothingEnabled = true;
+  sg.drawImage(src, 0, 0, small.width, small.height);
+
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.drawImage(small, 0, 0, s, s);
+  return c;
+}
+
+/** 与 sprites 一一对应的虚化贴图 */
+export const spritesBlur = sprites.map(c => makeBlurred(c, 0.22));
