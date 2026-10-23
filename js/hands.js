@@ -31,6 +31,23 @@ export const BONES = [
   [0, 17],                                  // 掌根
 ];
 
+/**
+ * 绘制用的"链条"：每根手指一条（腕→指尖），掌缘一条闭合弧。
+ * 骨架的美丑就差在这里——按关键点直连是"医疗探针"，
+ * 沿链条画平滑曲线、再让线宽渐细，才是"星尘之手"。
+ */
+export const CHAINS = [
+  { pts: [0, 1, 2, 3, 4], taper: true },              // 拇指
+  { pts: [5, 6, 7, 8], taper: true },                 // 食指
+  { pts: [9, 10, 11, 12], taper: true },              // 中指
+  { pts: [13, 14, 15, 16], taper: true },             // 无名指
+  { pts: [17, 18, 19, 20], taper: true },             // 小指
+  { pts: [0, 5, 9, 13, 17, 0], taper: false, palm: true }, // 掌缘（含腕底闭合）
+];
+
+/** 五个指尖的关键点下标 */
+const TIP_IDS = [4, 8, 12, 16, 20];
+
 export function newHand() {
   return {
     seen: false,
@@ -205,7 +222,7 @@ export function updateHands(dt) {
   }
 }
 
-/** 画一只手的骨架与掌心光晕 */
+/** 画一只手的星尘轮廓与掌心光晕 */
 export function drawHand(h, t) {
   const v = h.visible;
   if (v < 0.02 || !h.pts) return;
@@ -233,34 +250,92 @@ export function drawHand(h, t) {
     return;
   }
 
-  // 骨架：外发光层 + 内核层（同一路径连画两次，省一次构建）
   const pts = h.pts;
-  ctx.globalAlpha = 1;
+
+  /**
+   * 沿一条链画平滑曲线（二次贝塞尔：以相邻关键点的中点为锚，
+   * 关键点本身当控制点——既圆润又不会飘出关节太远）。
+   */
+  const trace = chain => {
+    const p = chain.pts;
+    ctx.moveTo(pts[p[0]].x, pts[p[0]].y);
+    if (p.length === 2) {
+      ctx.lineTo(pts[p[1]].x, pts[p[1]].y);
+      return;
+    }
+    for (let i = 1; i < p.length - 1; i++) {
+      const a = pts[p[i]];
+      const b = pts[p[i + 1]];
+      ctx.quadraticCurveTo(a.x, a.y, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    }
+    const last = pts[p[p.length - 1]];
+    ctx.lineTo(last.x, last.y);
+  };
+
   ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.globalAlpha = 1;
 
-  ctx.strokeStyle = `hsla(${hue},100%,68%,${0.10 * v})`;
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  for (const [a, b] of BONES) {
-    ctx.moveTo(pts[a].x, pts[a].y);
-    ctx.lineTo(pts[b].x, pts[b].y);
-  }
-  ctx.stroke();
-
-  ctx.strokeStyle = `hsla(${hue},100%,78%,${0.44 * v})`;
-  ctx.lineWidth = 1.2;
-  ctx.stroke();
-
-  // 关节与指尖
-  ctx.fillStyle = `hsla(${hue},100%,92%,${0.75 * v})`;
-  for (let i = 0; i < pts.length; i++) {
-    const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
-    const rr = isTip ? 2.4 + pulse * 1.1 : 1.1;
-    ctx.globalAlpha = (isTip ? 0.95 : 0.45) * v;
+  // ① 手指外辉光：粗、淡，像光从指根漫出来
+  for (const c of CHAINS.slice(0, 5)) {
+    ctx.strokeStyle = `hsla(${hue},100%,74%,${0.16 * v})`;
+    ctx.lineWidth = 5.2;
     ctx.beginPath();
-    ctx.arc(pts[i].x, pts[i].y, rr, 0, Math.PI * 2);
+    trace(c);
+    ctx.stroke();
+  }
+
+  // ② 手指内芯：从掌根到指尖渐细，像光顺着指尖流出去
+  for (const c of CHAINS.slice(0, 5)) {
+    const p = c.pts;
+    for (let i = 0; i < p.length - 1; i++) {
+      const k = i / (p.length - 2);                 // 0 掌根 → 1 指尖
+      const w = 2.8 * (1 - k) + 1.1 * k;
+      ctx.strokeStyle = `hsla(${hue},100%,${84 + k * 8}%,${(0.52 - k * 0.12) * v})`;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(pts[p[i]].x, pts[p[i]].y);
+      if (i === p.length - 2) {
+        ctx.lineTo(pts[p[i + 1]].x, pts[p[i + 1]].y);
+      } else {
+        const a = pts[p[i + 1]];
+        const b = pts[p[i + 2]];
+        ctx.quadraticCurveTo(a.x, a.y, (a.x + b.x) / 2, (a.y + b.y) / 2);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ③ 指尖光斑：只有指尖有"星"，关节不再是医疗探针上的一排铆钉
+  ctx.globalCompositeOperation = 'lighter';
+  for (let f = 0; f < TIP_IDS.length; f++) {
+    const tip = pts[TIP_IDS[f]];
+    const r = (3.2 + pulse * 1.4) * (1 - f * 0.06);
+    const gg = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, r * 3);
+    gg.addColorStop(0, `hsla(${hue},100%,95%,${0.85 * v})`);
+    gg.addColorStop(0.4, `hsla(${hue},100%,80%,${0.30 * v})`);
+    gg.addColorStop(1, `hsla(${hue},100%,70%,0)`);
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, r * 3, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ④ 食指尖如果是"笔尖"（正在写字），多给一颗亮星提示
+  if (h.drawing) {
+    const tip = pts[8];
+    const r = 5 + pulse * 2.5;
+    const gg = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, r * 3.4);
+    gg.addColorStop(0, `hsla(${THEME.handHue},100%,98%,${0.95 * v})`);
+    gg.addColorStop(0.35, `hsla(${THEME.handHue},100%,86%,${0.45 * v})`);
+    gg.addColorStop(1, `hsla(${THEME.handHue},100%,75%,0)`);
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, r * 3.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.globalAlpha = 1;
 }
 
