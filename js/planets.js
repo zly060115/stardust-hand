@@ -152,28 +152,29 @@ const PAINTERS = {
 /* ---------------------- 天体定义 ---------------------- */
 
 /**
- * fx / fy：相对画面中心的横向 / 纵向位置（比例）
+ * u / v：单位盘坐标（-1 ~ 1），由 placeOf() 按视口比例映射到屏幕。
+ * 布局刻意留白：右上角是按钮区、左下角是手势提示区，都不放天体。
  * z：深度（正 = 靠近镜头）
- * r：基准半径（像素）
+ * r：基准半径（像素，再乘视口缩放）
  * spin：自转速度（贴图滚动）
  */
 const BODIES = [
-  { key: 'sun',     name: '太阳', hue: 32,  fx: -0.385, fy: -0.06, z: -640, r: 46, spin: 0.010,
+  { key: 'sun',     name: '太阳', hue: 32,  u: -0.60,  v: -0.18, z: -640, r: 40, spin: 0.010,
     info: '恒星 · 光和热的源头' },
-  { key: 'mercury', name: '水星', hue: 30,  fx: 0.315,  fy: 0.30,  z: -180, r: 10, spin: 0.006,
+  { key: 'mercury', name: '水星', hue: 30,  u: 0.62,   v: 0.52,  z: -180, r: 12, spin: 0.006,
     info: '离太阳最近的行星' },
-  { key: 'venus',   name: '金星', hue: 40,  fx: -0.24,  fy: 0.335, z: 90,   r: 16, spin: -0.004,
+  { key: 'venus',   name: '金星', hue: 40,  u: -0.20,  v: 0.68,  z: 90,   r: 17, spin: -0.004,
     info: '启明星 · 被浓云包裹' },
-  { key: 'earth',   name: '地球', hue: 210, fx: 0.345,  fy: -0.175, z: 150,  r: 22, spin: 0.014,
+  { key: 'earth',   name: '地球', hue: 210, u: 0.60,   v: -0.46, z: 150,  r: 24, spin: 0.014,
     info: '我们的家 · 蔚蓝星球' },
-  { key: 'moon',    name: '月球', hue: 45,  fx: 0,      fy: 0,     z: 0,    r: 7,  spin: 0.003,
-    orbit: { parent: 'earth', rx: 62, ry: 26, rz: 26, w: 0.35 },
+  { key: 'moon',    name: '月球', hue: 45,  u: 0,      v: 0,     z: 0,    r: 9,  spin: 0.003,
+    orbit: { parent: 'earth', rx: 76, ry: 30, rz: 30, w: 0.35 },
     info: '地球唯一的卫星' },
-  { key: 'mars',    name: '火星', hue: 12,  fx: -0.43,  fy: 0.215, z: 430,  r: 14, spin: 0.011,
+  { key: 'mars',    name: '火星', hue: 12,  u: -0.66,  v: 0.42,  z: 430,  r: 16, spin: 0.011,
     info: '红色星球 · 人类的下一站' },
-  { key: 'jupiter', name: '木星', hue: 24,  fx: 0.16,   fy: 0.43,  z: -430, r: 40, spin: 0.020,
+  { key: 'jupiter', name: '木星', hue: 24,  u: 0.10,   v: -0.80, z: -430, r: 34, spin: 0.020,
     info: '气态巨行星 · 大红斑在咆哮' },
-  { key: 'saturn',  name: '土星', hue: 44,  fx: 0.485,  fy: 0.06,  z: -760, r: 30, spin: 0.016,
+  { key: 'saturn',  name: '土星', hue: 44,  u: 0.72,   v: 0.06,  z: -760, r: 25, spin: 0.016,
     ring: true, info: '戴着光环的优雅行星' },
 ];
 
@@ -278,6 +279,22 @@ export function initPlanets() {
   hovered = null;
 }
 
+/**
+ * 自适应布局：按视口宽高比把"单位盘"(u,v ∈ -1..1) 映射到屏幕。
+ * 竖屏时按高度压缩、横屏时按宽度压缩，保证天体永远落在画面之内。
+ * 直接写 fx / fy 会因为屏幕比例不同把土星挤出屏幕（实测过）。
+ */
+function placeOf(b, out) {
+  const aspect = W / Math.max(1, H);
+  const sx = Math.min(1, aspect / 1.6);     // 屏幕越窄，横向越收
+  const sy = Math.min(1, 1.6 / aspect);     // 屏幕越扁，纵向越收
+  out.x = CX + b.u * sx * W * 0.42;
+  out.y = CY + b.v * sy * H * 0.42;
+  return out;
+}
+
+const _p = { x: 0, y: 0 };
+
 /** 更新投影位置与悬停检测 */
 export function updatePlanets(t) {
   if (!FX.planets || !canvasCtx) return;
@@ -292,28 +309,34 @@ export function updatePlanets(t) {
     }
   }
 
+  // 全局缩放：小屏（手机）上天体整体缩小，免得挤成一团
+  const dim = Math.min(W, H);
+  const sizeK = Math.max(0.55, Math.min(1.25, dim / 700));
+
   for (const b of BODIES) {
-    let wx = CX + b.fx * W;
-    let wy = CY + b.fy * H;
+    placeOf(b, _p);
+    let wx = _p.x;
+    let wy = _p.y;
     let wz = b.z;
 
     if (b.orbit) {
       const p = byKey.get(b.orbit.parent);
       const a = t * b.orbit.w;
-      wx = p._wx + Math.cos(a) * b.orbit.rx;
-      wy = p._wy + Math.sin(a) * b.orbit.ry;
-      wz = p._wz + Math.sin(a * 0.9) * b.orbit.rz;
+      wx = p._wx + Math.cos(a) * b.orbit.rx * sizeK;
+      wy = p._wy + Math.sin(a) * b.orbit.ry * sizeK;
+      wz = p._wz + Math.sin(a * 0.9) * b.orbit.rz * sizeK;
     }
     b._wx = wx; b._wy = wy; b._wz = wz;
+    b._sizeK = sizeK;
 
     const pr = proj(wx, wy, wz, b._pr || (b._pr = {}));
-    b._sx = pr.x; b._sy = pr.y; b._k = pr.k;
-    b._ok = pr.ok && b._sx > -200 && b._sx < W + 200 && b._sy > -200 && b._sy < H + 200;
+    b._sx = pr.x; b._sy = pr.y; b._k = pr.k * sizeK;
+    b._ok = pr.ok;
 
-    if (active && b._ok) {
-      const r = b.r * pr.k;
+    if (active && pr.ok) {
+      const r = Math.max(4, b.r * b._k);
       const d = Math.hypot(hx - pr.x, hy - pr.y);
-      if (d < Math.max(r * 2.2, 64)) hovered = b;
+      if (d < Math.max(r * 2.4, 70)) hovered = b;
     }
   }
 }
@@ -325,13 +348,13 @@ export function drawPlanets(t) {
   const list = BODIES.filter(b => b._ok).sort((a, c) => a._wz - c._wz);
 
   for (const b of list) {
-    const r = Math.max(2.5, b.r * b._k);
+    const r = Math.max(4, b.r * b._k);
     const hot = b === hovered;
 
     // 外发光
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = hot ? 0.5 : 0.26;
+    ctx.globalAlpha = hot ? 0.55 : 0.34;
     const g = r * (b.key === 'sun' ? 4.6 : 3.1);
     ctx.drawImage(b.sprite, b._sx - g, b._sy - g, g * 2, g * 2);
     ctx.restore();
@@ -360,7 +383,7 @@ export function drawPlanets(t) {
   if (hovered) {
     if (hovered !== hoverSince) hoverSince = hovered;
     const b = hovered;
-    const r = Math.max(2.5, b.r * b._k);
+    const r = Math.max(4, b.r * b._k);
     const y = b._sy - r * 1.5 - 26;
     ctx.font = `${Math.max(13, r * 0.5)}px "PingFang SC","Microsoft YaHei",sans-serif`;
     ctx.fillStyle = 'rgba(255,238,203,0.95)';
@@ -374,14 +397,22 @@ export function drawPlanets(t) {
 
   // 大天体的常驻淡标签（帮助"寻星"）
   for (const b of BODIES) {
-    if (!b._ok || b === hovered || b.r < 16) continue;
-    const r = Math.max(2.5, b.r * b._k);
-    if (r < 9) continue;
+    if (!b._ok || b === hovered) continue;
+    const r = Math.max(4, b.r * b._k);
+    if (r < 12) continue;   // 太小的天体不挂常驻标签，免得糊成一团
     ctx.font = '11px "PingFang SC","Microsoft YaHei",sans-serif';
     ctx.fillStyle = `hsla(${b.hue},70%,78%,${b._k > 0.95 ? 0.5 : 0.3})`;
     ctx.fillText(b.name, b._sx, b._sy - r - 16);
   }
   ctx.restore();
+}
+
+/** 调试：当前每颗天体的屏幕位置与半径（控制台可用 planets.__debug() 查看） */
+export function __debug() {
+  return BODIES.map(b => ({
+    key: b.key, x: Math.round(b._sx), y: Math.round(b._sy),
+    r: +(Math.max(4, b.r * b._k)).toFixed(1), ok: !!b._ok,
+  }));
 }
 
 /** 月球轨道虚线（帮助看清地月关系） */
@@ -397,7 +428,9 @@ export function drawOrbits() {
   ctx.strokeStyle = 'rgba(200,220,255,0.06)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.ellipse(p._sx, p._sy, 62 * p._k, 26 * p._k, 0, 0, Math.PI * 2);
+  const o = m.orbit;
+  const K = m._sizeK || 1;
+  ctx.ellipse(p._sx, p._sy, o.rx * K * p._k, o.ry * K * p._k, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }
